@@ -193,7 +193,6 @@ try {
 
             Escreve-Sucesso "Copiado: $($item.Name)"
 
-            $sucessos++
         }
         catch {
             Escreve-Erro "$($item.Name) - $($_.Exception.Message)"
