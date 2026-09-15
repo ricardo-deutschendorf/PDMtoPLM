@@ -33,7 +33,6 @@ $wrapperTemporario = Join-Path `
     $env:TEMP `
     "PDMtoPLM_wrapper.vb"
 
-. "$PSScriptRoot\functions.ps1"
 # ============================================================
 # FUNCOES VISUAIS
 # ============================================================
@@ -1198,23 +1197,19 @@ try {
 
     }
 
-  $scriptTc = Join-Path `
-    $PSScriptRoot `
-    "importar_teamcenter.ps1"
+    if (
+        $arquivosPrt.Count -eq 0 -or
+        $arquivosJt.Count -eq 0
+    ) {
 
-$ps64 = Join-Path `
-    $env:WINDIR `
-    "Sysnative\WindowsPowerShell\v1.0\powershell.exe"
+        throw `
+            "Conversao incompleta. Verifique '$logNx'."
 
-& $ps64 `
-    -NoProfile `
-    -ExecutionPolicy Bypass `
-    -File $scriptTc `
-    -PastaNx $pastaNxMigrated
+    }
 
-if ($LASTEXITCODE -ne 0) {
-    throw "A importacao Teamcenter falhou."
-}
+    Write-Host ""
+    Escreve-Sucesso `
+        "Processo concluido automaticamente."
 
     Escreve-Info `
         "Saida: $pastaNxMigrated"
