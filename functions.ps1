@@ -61,63 +61,6 @@ function Connect-TC {
     Write-Host "TC 6 - Conexao concluida"
 }
 
-function Get-OrCreateItem {
-
-    param(
-        [string]$Codigo,
-        [string]$Empresa,
-        [string]$TipoItem
-    )
-
-    # BUSCAR ITEM
-
-    $getItem =
-    $script:Functions.GetMethod(
-        "getItem"
-    )
-
-    $item =
-    $getItem.Invoke(
-        $null,
-        @(
-            $Codigo,
-            $Empresa
-        )
-    )
-
-    if ($null -ne $item) {
-        Write-Host "[OK] Item existente: $Codigo"
-        return $item
-    }
-
-    # CRIAR ITEM
-
-    Write-Host "[AVISO] Criando item: $Codigo"
-
-    $criarItem =
-    $script:Functions.GetMethod(
-        "criarItem"
-    )
-
-    $item =
-    $criarItem.Invoke(
-        $null,
-        @(
-            $Codigo,
-            $TipoItem,
-            $Empresa
-        )
-    )
-
-    if ($null -eq $item) {
-        throw "Nao foi possivel criar o item '$Codigo'."
-    }
-
-    Write-Host "[OK] Item criado: $Codigo"
-
-    return $item
-}
-
 function Get-Revision {
 
     param($Item)
@@ -136,6 +79,87 @@ function Get-Revision {
         $null,
         @($Item)
     )
+}
+
+function New-NextItemTC {
+
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CodigoArquivo,
+
+        [string]$Empresa = "02",
+
+        [string]$TipoItem = "GD5DesignPerto",
+
+        [int]$Limite = 100
+    )
+
+    # 260.02.002-1.prt deve iniciar a procura em 260.02.002
+    if ($CodigoArquivo -match '^(.*)-(\d+)$') {
+        $codigoBase = $Matches[1]
+    }
+    else {
+        $codigoBase = $CodigoArquivo
+    }
+
+    $getItem = $script:Functions.GetMethod("getItem")
+    $criarItem = $script:Functions.GetMethod("criarItem")
+
+    if ($null -eq $getItem) {
+        throw "Metodo Functions.getItem nao encontrado."
+    }
+
+    if ($null -eq $criarItem) {
+        throw "Metodo Functions.criarItem nao encontrado."
+    }
+
+    for ($contador = 0; $contador -le $Limite; $contador++) {
+
+        if ($contador -eq 0) {
+            $codigoCandidato = $codigoBase
+        }
+        else {
+            $codigoCandidato = "$codigoBase-$contador"
+        }
+
+        Write-Host "Verificando: $codigoCandidato"
+
+        $itemExistente = $getItem.Invoke(
+            $null,
+            @(
+                $codigoCandidato,
+                $Empresa
+            )
+        )
+
+        if ($null -ne $itemExistente) {
+            Write-Host "[AVISO] Ja existe: $codigoCandidato"
+            continue
+        }
+
+        Write-Host "[INFO] Tentando criar: $codigoCandidato"
+
+        $itemCriado = $criarItem.Invoke(
+            $null,
+            @(
+                $codigoCandidato,
+                $TipoItem,
+                $Empresa
+            )
+        )
+
+        if ($null -ne $itemCriado) {
+
+            Write-Host "[OK] Item criado: $codigoCandidato"
+
+            return [PSCustomObject]@{
+                Codigo = $codigoCandidato
+                Item   = $itemCriado
+            }
+        }
+    }
+
+    throw "Nao foi possivel criar um item apos $Limite tentativas."
 }
 
 function Import-PRT {
@@ -224,6 +248,7 @@ function Import-PDF {
         )
     )
 }
+
 function Import-DWG {
 
     param(

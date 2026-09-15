@@ -18,22 +18,37 @@ try {
             -File `
             -Recurse
     )
-
     foreach ($arquivoPrt in $arquivosPrt) {
 
-        $codigoBase = $arquivoPrt.BaseName
-        $codigoTc = "$codigoBase-1"
+        $codigoArquivo = $arquivoPrt.BaseName
 
-        Write-Host "Consultando: $codigoTc"
-
-        Write-Host "Buscando ou criando: $codigoTc"
-
-        $item = Get-OrCreateItem `
-            -Codigo $codigoTc `
+        $destino = New-NextItemTC `
+            -CodigoArquivo $codigoArquivo `
             -Empresa "02" `
             -TipoItem "GD5DesignPerto"
 
-        Write-Host "[OK] Item disponivel: $codigoTc"
+        $codigoTc = $destino.Codigo
+        $item = $destino.Item
+
+        $rev = Get-Revision -Item $item
+
+        if ($null -eq $rev) {
+            throw "Revisao nao encontrada para '$codigoTc'."
+        }
+
+        $resultado = Import-PRT `
+            -Rev $rev `
+            -Codigo $codigoTc `
+            -Arquivo $arquivoPrt.FullName
+
+        Write-Host "[PRT] $codigoTc = $resultado"
+
+        if (
+            $null -ne $item -and
+            -not [string]::IsNullOrWhiteSpace($destino.Nome)
+        ) {
+   
+        }
 
         $rev = Get-Revision -Item $item
 

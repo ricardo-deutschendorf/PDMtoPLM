@@ -692,59 +692,114 @@ End Module
 }
 
 # ============================================================
-# EXECUCAO PRINCIPAL
+# FUNCOES DO PROCESSO PRINCIPAL
 # ============================================================
 
-try {
+function Testar-Ambiente {
 
     Escreve-Titulo "VALIDANDO AMBIENTE"
-    Start-Sleep -Seconds 0.5
 
-    if (-not (Test-Path $dllPdm)) {
-        throw "Interop.EdmLib.dll nao encontrada em '$dllPdm'."
+    $itensObrigatorios = @(
+        @{
+            Caminho = $dllPdm
+            Nome    = "Interop.EdmLib.dll"
+        },
+        @{
+            Caminho = $runJournalExe
+            Nome    = "run_journal.exe"
+        },
+        @{
+            Caminho = $importSwDll
+            Nome    = "ImportSW2NX.dll"
+        }
+    )
+
+    foreach ($itemObrigatorio in $itensObrigatorios) {
+
+        if (-not (
+                Test-Path -LiteralPath $itemObrigatorio.Caminho
+            )) {
+
+            throw "$($itemObrigatorio.Nome) nao encontrado em '$($itemObrigatorio.Caminho)'."
+        }
     }
 
-    if (-not (Test-Path $caminhoCredencial)) {
+    if (-not (
+            Test-Path -LiteralPath $caminhoCredencial
+        )) {
 
-        Start-Process powershell.exe `
-            -ArgumentList "-ExecutionPolicy Bypass -File `"$PSScriptRoot\configura_credencial.ps1`"" `
+        Escreve-Aviso "Credencial do vault nao encontrada."
+
+        $configuradorCredencial =
+        Join-Path `
+            $PSScriptRoot `
+            "configura_credencial.ps1"
+
+        if (-not (
+                Test-Path -LiteralPath $configuradorCredencial
+            )) {
+            throw "configura_credencial.ps1 nao encontrado."
+        }
+
+        Start-Process `
+            -FilePath "powershell.exe" `
+            -ArgumentList @(
+            "-NoProfile"
+            "-ExecutionPolicy"
+            "Bypass"
+            "-File"
+            "`"$configuradorCredencial`""
+        ) `
             -Wait
 
-    }
-
-    if (-not (Test-Path $runJournalExe)) {
-        throw "run_journal.exe nao encontrado em '$runJournalExe'."
-    }
-
-    if (-not (Test-Path $importSwDll)) {
-        throw "ImportSW2NX.dll nao encontrada em '$importSwDll'."
+        if (-not (
+                Test-Path -LiteralPath $caminhoCredencial
+            )) {
+            throw "A credencial do vault nao foi criada."
+        }
     }
 
     Add-Type -Path $dllPdm
 
-    Escreve-Sucesso "Ambiente validado."
+    if (-not (
+            Test-Path -LiteralPath $pastaDestino
+        )) {
 
-    # ========================================================
-    # CONEXAO COM O VAULT
-    # ========================================================
+        New-Item `
+            -ItemType Directory `
+            -Path $pastaDestino `
+            -Force |
+        Out-Null
+    }
+
+    Escreve-Sucesso "Ambiente validado."
+}
+
+
+function Connect-VaultPdm {
 
     Escreve-Titulo "CONEXAO COM O VAULT"
-    Start-Sleep -Seconds 0.5
-    $credencial = Import-Clixml `
-        -Path $caminhoCredencial
+
+    $credencial =
+    Import-Clixml `
+        -LiteralPath $caminhoCredencial
+
+    if ($null -eq $credencial) {
+        throw "Nao foi possivel carregar a credencial do vault."
+    }
 
     $senhaSegura =
     $credencial.SenhaCriptografada |
     ConvertTo-SecureString
 
-    $ptrSenha = `
-        [Runtime.InteropServices.Marshal]::
+    $ptrSenha =
+    [Runtime.InteropServices.Marshal]::
     SecureStringToBSTR($senhaSegura)
 
     try {
 
-        $senhaPlana = `
-            [Runtime.InteropServices.Marshal]::
+        $senhaPlana =
+        [Runtime.InteropServices.Marshal]::
         PtrToStringBSTR($ptrSenha)
 
         $vault =
@@ -755,7 +810,6 @@ try {
             $senhaPlana,
             $vaultName
         )
-
     }
     finally {
 
@@ -763,9 +817,11 @@ try {
 
             [Runtime.InteropServices.Marshal]::
             ZeroFreeBSTR($ptrSenha)
-
         }
 
+        Remove-Variable `
+            senhaPlana `
+            -ErrorAction SilentlyContinue
     }
 
     if (-not $vault.IsLoggedIn) {
@@ -774,164 +830,163 @@ try {
 
     Escreve-Sucesso "Conectado ao vault '$vaultName'."
 
-    if (-not (Test-Path $pastaDestino)) {
+    return $vault
+}
 
-        New-Item `
-            -ItemType Directory `
-            -Path $pastaDestino `
-            -Force |
-        Out-Null
 
+function Search-ArquivosPdm {
+
+    param(
+        [Parameter(Mandatory = $true)]
+        $Vault,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Pesquisa
+    )
+
+    $codigoBusca =
+    $Pesquisa.Replace(
+        "*",
+        "%"
+    )
+
+    if ($codigoBusca -notmatch "%") {
+        $codigoBusca = "%$codigoBusca%"
     }
 
-    # ========================================================
-    # BUSCA
-    # ========================================================
-    
+    $busca =
+    $Vault.CreateSearch()
+
+    $busca.FileName =
+    $codigoBusca
+
+    $busca.FindHistoricStates =
+    $false
+
+    $resultados =
+    [System.Collections.Generic.List[object]]::new()
+
+    $resultado =
+    $busca.GetFirstResult()
+
+    while ($null -ne $resultado) {
+
+        $resultados.Add($resultado)
+
+        $resultado =
+        $busca.GetNextResult()
+    }
+
+    return $resultados.ToArray()
+}
+
+
+function Get-CodigoPdm {
+
+    param(
+        [Parameter(Mandatory = $true)]
+        $Vault
+    )
+
     Escreve-Titulo "BUSCA DE DOCUMENTO"
-    Start-Sleep -Seconds 0.5
 
-    Write-Host "Exemplo de codigo de peca: 260.02.002"
-    Write-Host "Exemplo de pesquisa nao exata: 260.*"
-    Write-Host "(pode demorar alguns segundos)"
+    Write-Host "Exemplo de codigo: 260.02.002"
+    Write-Host "Exemplo com curinga: 260.*"
     Write-Host ""
-
-    $codigoDigitado = $null
-    $listaResultados = @()
-
-    $codigoDigitado =
-    Read-Host "Digite o codigo da peca"
 
     while ($true) {
 
-        $codigoBusca =
-        $codigoDigitado.Replace("*", "%")
+        $codigoDigitado = (Read-Host "Digite o codigo da peca").Trim()
 
-        if ($codigoBusca -notmatch "%") {
-            $codigoBusca = "%$codigoBusca%"
+        if ([string]::IsNullOrEmpty($codigoDigitado)) {
+
+            Escreve-Aviso "O codigo nao pode ficar vazio."
+            continue
         }
 
-        $busca = $vault.CreateSearch()
-        $busca.FileName = $codigoBusca
-        $busca.FindHistoricStates = $false
 
-        $listaResultados = @()
-
-        $resultado = $busca.GetFirstResult()
-
-        while ($null -ne $resultado) {
-
-            $listaResultados += $resultado
-            $resultado = $busca.GetNextResult()
-
-        }
+        $listaResultados =
+        @(
+            Search-ArquivosPdm `
+                -Vault $Vault `
+                -Pesquisa $codigoDigitado
+        )
 
         if ($listaResultados.Count -eq 0) {
 
             Escreve-Aviso "Nenhum resultado encontrado."
-
-            $codigoDigitado =
-            Read-Host "Digite outra pesquisa"
-
             continue
         }
 
-        #
-        # código exato
-        #
-
-        #
-        # código exato
-        #
-
-        if (-not $codigoDigitado.Contains("*")) {
-
-            $codigosExatos = @()
-
+        $codigosEncontrados =
+        @(
             foreach ($item in $listaResultados) {
 
-                $nome =
-                [System.IO.Path]::GetFileNameWithoutExtension(
+                $nomeSemExtensao =
+                [System.IO.Path]::
+                GetFileNameWithoutExtension(
                     $item.Name
                 )
 
-                if ($nome -match '\d+\.\d+\.\d+') {
-
-                    $codigosExatos += $Matches[0]
-
+                if (
+                    $nomeSemExtensao -match
+                    '\d+\.\d+\.\d+'
+                ) {
+                    $Matches[0]
                 }
+            }
+        ) |
+        Sort-Object -Unique
 
+        if (-not $codigoDigitado.Contains("*")) {
+
+            if (
+                $codigosEncontrados -contains
+                $codigoDigitado
+            ) {
+
+                return [PSCustomObject]@{
+                    Codigo     = $codigoDigitado
+                    Resultados = $listaResultados
+                }
             }
 
-            $codigosExatos =
-            $codigosExatos |
-            Select-Object -Unique
+            Escreve-Aviso "Codigo exato nao encontrado."
+            continue
+        }
 
-            if ($codigosExatos -contains $codigoDigitado) {
-
-                break
-
-            }
+        if ($codigosEncontrados.Count -eq 0) {
 
             Escreve-Aviso `
-                "Codigo nao encontrado."
-
-            $codigoDigitado =
-            Read-Host "Digite outro codigo"
+                "Foram encontrados arquivos, mas nenhum codigo valido foi identificado."
 
             continue
-
         }
 
         Escreve-Titulo "CODIGOS ENCONTRADOS"
 
-        $codigosEncontrados = @()
-
-        foreach ($item in $listaResultados) {
-
-            $nome =
-            [System.IO.Path]::GetFileNameWithoutExtension(
-                $item.Name
-            )
-
-            if ($nome -match '\d+\.\d+\.\d+') {
-
-                $codigo = $Matches[0]
-
-                if ($codigosEncontrados -notcontains $codigo) {
-
-                    $codigosEncontrados += $codigo
-
-                }
-
-            }
-        }
-
-        $codigosEncontrados |
-        Sort-Object |
-        ForEach-Object {
-            Write-Host "  $_"
+        foreach ($codigo in $codigosEncontrados) {
+            Write-Host "  $codigo"
         }
 
         Write-Host ""
-
-        $codigoDigitado =
-        Read-Host `
-            "Digite o codigo da peca"
-
     }
+}
 
 
-    # ========================================================
-    # PASTA DO CODIGO
-    # ========================================================
+function Get-PastaDestinoCodigo {
 
-    $nomePastaSeguro = $codigoDigitado
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Codigo
+    )
+
+    $nomePastaSeguro =
+    $Codigo
 
     foreach (
         $caractereInvalido in
-        [System.IO.Path]::
-        GetInvalidFileNameChars()
+        [System.IO.Path]::GetInvalidFileNameChars()
     ) {
 
         $nomePastaSeguro =
@@ -939,97 +994,120 @@ try {
             $caractereInvalido,
             "_"
         )
-
     }
 
-    $pastaDestinoFinal = Join-Path `
+    $pastaCodigo =
+    Join-Path `
         $pastaDestino `
         $nomePastaSeguro
 
-    if (-not (Test-Path $pastaDestinoFinal)) {
+    if (-not (
+            Test-Path -LiteralPath $pastaCodigo
+        )) {
 
         New-Item `
             -ItemType Directory `
-            -Path $pastaDestinoFinal `
+            -Path $pastaCodigo `
             -Force |
         Out-Null
 
-        Escreve-Info `
-            "Pasta criada: $pastaDestinoFinal"
-
+        Escreve-Info "Pasta criada: $pastaCodigo"
     }
 
-    # ========================================================
-    # DOWNLOAD
-    # ========================================================
+    return $pastaCodigo
+}
+
+
+function Copy-ArquivosPdm {
+
+    param(
+        [Parameter(Mandatory = $true)]
+        $Vault,
+
+        [Parameter(Mandatory = $true)]
+        [object[]]$Resultados,
+
+        [Parameter(Mandatory = $true)]
+        [string]$PastaDestinoCodigo
+    )
 
     Escreve-Titulo "DOWNLOAD DOS ARQUIVOS"
-    
-    $copiados = 0
-    $existentes = 0
-    $falhas = 0
-    Start-Sleep -Seconds 1
 
-    foreach ($item in $listaResultados) {
+    $copiados =
+    0
+
+    $existentes =
+    0
+
+    $falhas =
+    0
+
+    foreach ($resultadoPdm in $Resultados) {
 
         try {
 
-            $pastaPai = $null
+            $arquivoDestino =
+            Join-Path `
+                $PastaDestinoCodigo `
+                $resultadoPdm.Name
 
-            $arquivo =
-            $vault.GetFileFromPath(
-                $item.Path,
-                [ref]$pastaPai
-            )
-
-            if ($null -eq $arquivo) {
-
-                Escreve-Erro `
-                    "Nao foi possivel obter '$($item.Name)'."
-
-                $falhas++
-                continue
-
-            }
-
-            $arquivoDestino = Join-Path `
-                $pastaDestinoFinal `
-                $item.Name
-
-            if (Test-Path $arquivoDestino) {
+            if (
+                Test-Path -LiteralPath $arquivoDestino
+            ) {
 
                 Escreve-Aviso `
-                    "Ja baixado: $($item.Name)"
+                    "Ja baixado: $($resultadoPdm.Name)"
 
                 $existentes++
                 continue
-
             }
 
-            $versao = 0
-            $folder = $pastaPai.ID
+            $pastaPai =
+            $null
 
-            $arquivo.GetFileCopy(
+            $arquivoPdm =
+            $Vault.GetFileFromPath(
+                $resultadoPdm.Path,
+                [ref]$pastaPai
+            )
+
+            if ($null -eq $arquivoPdm) {
+
+                throw `
+                    "Nao foi possivel obter o arquivo no vault."
+            }
+
+            if ($null -eq $pastaPai) {
+
+                throw `
+                    "A pasta do arquivo nao foi localizada no vault."
+            }
+
+            $versao =
+            0
+
+            $folderId =
+            $pastaPai.ID
+
+            $arquivoPdm.GetFileCopy(
                 0,
                 [ref]$versao,
-                [ref]$folder,
+                [ref]$folderId,
                 0,
                 ""
             )
 
             $localPath =
-            $arquivo.GetLocalPath(
+            $arquivoPdm.GetLocalPath(
                 $pastaPai.ID
             )
 
-            if (-not (Test-Path $localPath)) {
+            if (-not (
+                    Test-Path -LiteralPath $localPath
+                )) {
 
-                Escreve-Erro `
-                    "Arquivo nao encontrado no cache: $($item.Name)"
-
-                $falhas++
-                continue
-
+                throw `
+                    "Arquivo nao encontrado no cache local."
             }
 
             Copy-Item `
@@ -1037,16 +1115,17 @@ try {
                 -Destination $arquivoDestino
 
             Escreve-Sucesso `
-                "Copiado: $($item.Name)"
+                "Copiado: $($resultadoPdm.Name)"
 
             $copiados++
-
         }
         catch {
-            Escreve-Erro "$($item.Name) - $($_.Exception.Message)"
+
+            Escreve-Erro `
+                "$($resultadoPdm.Name) - $($_.Exception.Message)"
+
             $falhas++
         }
-
     }
 
     Write-Host ""
@@ -1054,13 +1133,26 @@ try {
     Escreve-Info "Ja existentes: $existentes"
     Escreve-Info "Falhas: $falhas"
 
-    # ========================================================
-    # LOCALIZA ARQUIVO PRINCIPAL
-    # ========================================================
+    if (
+        $copiados -eq 0 -and
+        $existentes -eq 0
+    ) {
+
+        throw "Nenhum arquivo ficou disponivel para conversao."
+    }
+}
+
+
+function Get-ArquivoSolidWorksPrincipal {
+
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Pasta
+    )
 
     $arquivoPrincipal =
     Get-ChildItem `
-        -LiteralPath $pastaDestinoFinal `
+        -LiteralPath $Pasta `
         -File `
         -ErrorAction SilentlyContinue |
     Where-Object {
@@ -1072,164 +1164,330 @@ try {
 
         $arquivoPrincipal =
         Get-ChildItem `
-            -LiteralPath $pastaDestinoFinal `
+            -LiteralPath $Pasta `
             -File `
             -ErrorAction SilentlyContinue |
         Where-Object {
             $_.Extension -ieq ".SLDPRT"
         } |
         Select-Object -First 1
-
     }
 
     if ($null -eq $arquivoPrincipal) {
-        throw "Nenhum arquivo SLDPRT ou SLDASM foi encontrado para conversao."
+
+        throw `
+            "Nenhum arquivo SLDPRT ou SLDASM foi encontrado."
     }
 
-    Escreve-Info `
-        "Arquivo principal: $($arquivoPrincipal.Name)"
+    return $arquivoPrincipal
+}
 
-    # ========================================================
-    # REMOVE SAIDAS ANTIGAS
-    # ========================================================
 
-    $pastaNxMigrated = Join-Path `
-        $pastaDestinoFinal `
+function Get-ArquivosConvertidos {
+
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PastaNx
+    )
+
+    if (-not (
+            Test-Path -LiteralPath $PastaNx
+        )) {
+
+        return [PSCustomObject]@{
+            Prt = @()
+            Jt  = @()
+        }
+    }
+
+    $arquivos =
+    @(
+        Get-ChildItem `
+            -LiteralPath $PastaNx `
+            -File `
+            -Recurse `
+            -ErrorAction SilentlyContinue
+    )
+
+    return [PSCustomObject]@{
+        Prt = @(
+            $arquivos |
+            Where-Object {
+                $_.Extension -ieq ".prt"
+            }
+        )
+
+        Jt  = @(
+            $arquivos |
+            Where-Object {
+                $_.Extension -ieq ".jt"
+            }
+        )
+    }
+}
+
+
+function Invoke-ConversaoNx {
+
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PastaEntrada
+    )
+
+    $pastaNx =
+    Join-Path `
+        $PastaEntrada `
         "NXmigratedFiles"
 
-    if (Test-Path $pastaNxMigrated) {
+    $arquivosExistentes =
+    Get-ArquivosConvertidos `
+        -PastaNx $pastaNx
+
+    if ($arquivosExistentes.Prt.Count -gt 0) {
+
+        Escreve-Titulo "CONVERSAO NX"
 
         Escreve-Aviso `
-            "Removendo conversao anterior."
+            "A conversao nao sera repetida."
 
-        Remove-Item `
-            -LiteralPath $pastaNxMigrated `
-            -Recurse `
-            -Force
+        foreach ($prt in $arquivosExistentes.Prt) {
 
+            Escreve-Info `
+                "PRT existente: $($prt.Name)"
+        }
+
+        return $pastaNx
     }
 
-    # ========================================================
-    # CRIA E EXECUTA WRAPPER NX
-    # ========================================================
+    if (
+        Test-Path -LiteralPath $pastaNx
+    ) {
+
+        Escreve-Aviso `
+            "Pasta de conversao incompleta encontrada."
+
+        Escreve-Aviso `
+            "Removendo somente a saida incompleta."
+
+        Remove-Item `
+            -LiteralPath $pastaNx `
+            -Recurse `
+            -Force
+    }
 
     Escreve-Titulo "CONVERSAO SILENCIOSA NO NX"
 
     Criar-WrapperNx
 
-    Escreve-Info `
-        "Executando NX batch..."
+    Escreve-Info "Executando NX batch..."
 
     & $runJournalExe `
         $wrapperTemporario `
         "-args" `
-        $pastaDestinoFinal `
+        $PastaEntrada `
         $empresa
 
-    $codigoSaidaNx = $LASTEXITCODE
+    $codigoSaidaNx =
+    $LASTEXITCODE
 
     if ($codigoSaidaNx -ne 0) {
 
         throw `
             "NX retornou codigo de erro $codigoSaidaNx. Verifique '$logNx'."
-
     }
 
-    # ========================================================
-    # VALIDA RESULTADOS
-    # ========================================================
+    $arquivosGerados =
+    Get-ArquivosConvertidos `
+        -PastaNx $pastaNx
 
-    if (-not (Test-Path $pastaNxMigrated)) {
+    if ($arquivosGerados.Prt.Count -eq 0) {
 
         throw `
-            "A pasta NXmigratedFiles nao foi criada. Verifique '$logNx'."
-
+            "A conversao terminou, mas nenhum arquivo PRT foi gerado."
     }
 
-    $arquivosPrt =
-    Get-ChildItem `
-        -LiteralPath $pastaNxMigrated `
-        -Filter "*.prt" `
-        -File `
-        -Recurse `
-        -ErrorAction SilentlyContinue
+    Escreve-Sucesso "Conversao NX concluida."
 
-    $arquivosJt =
-    Get-ChildItem `
-        -LiteralPath $pastaNxMigrated `
-        -Filter "*.jt" `
-        -File `
-        -Recurse `
-        -ErrorAction SilentlyContinue
+    return $pastaNx
+}
+
+
+function Show-ResultadoConversao {
+
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PastaNx
+    )
+
+    $resultado =
+    Get-ArquivosConvertidos `
+        -PastaNx $PastaNx
 
     Escreve-Titulo "RESULTADO"
 
-    if ($arquivosPrt.Count -eq 0) {
+    foreach ($arquivoPrt in $resultado.Prt) {
 
-        Escreve-Erro `
-            "Nenhum arquivo PRT foi gerado."
+        Escreve-Sucesso `
+            "PRT: $($arquivoPrt.Name)"
+    }
 
+    if ($resultado.Jt.Count -eq 0) {
+
+        Escreve-Aviso `
+            "Nenhum arquivo JT encontrado."
     }
     else {
 
-        foreach ($arquivoPrt in $arquivosPrt) {
-
-            Escreve-Sucesso `
-                "PRT: $($arquivoPrt.Name)"
-
-        }
-
-    }
-
-    if ($arquivosJt.Count -eq 0) {
-
-        Escreve-Erro `
-            "Nenhum arquivo JT foi gerado."
-
-    }
-    else {
-
-        foreach ($arquivoJt in $arquivosJt) {
+        foreach ($arquivoJt in $resultado.Jt) {
 
             Escreve-Sucesso `
                 "JT: $($arquivoJt.Name)"
-
         }
-
     }
 
-  $scriptTc = Join-Path `
-    $PSScriptRoot `
-    "importar_teamcenter.ps1"
-
-$ps64 = Join-Path `
-    $env:WINDIR `
-    "Sysnative\WindowsPowerShell\v1.0\powershell.exe"
-
-& $ps64 `
-    -NoProfile `
-    -ExecutionPolicy Bypass `
-    -File $scriptTc `
-    -PastaNx $pastaNxMigrated
-
-if ($LASTEXITCODE -ne 0) {
-    throw "A importacao Teamcenter falhou."
+    return $resultado
 }
+
+
+function Invoke-ImportacaoTeamcenter {
+
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PastaNx
+    )
+
+    Escreve-Titulo "IMPORTACAO TEAMCENTER"
+
+    $scriptTc =
+    Join-Path `
+        $PSScriptRoot `
+        "importar_teamcenter.ps1"
+
+    if (-not (
+            Test-Path -LiteralPath $scriptTc
+        )) {
+
+        throw `
+            "importar_teamcenter.ps1 nao encontrado em '$scriptTc'."
+    }
+
+    $ps64 =
+    Join-Path `
+        $env:WINDIR `
+        "Sysnative\WindowsPowerShell\v1.0\powershell.exe"
+
+    if (-not (
+            Test-Path -LiteralPath $ps64
+        )) {
+
+        $ps64 =
+        Join-Path `
+            $env:WINDIR `
+            "System32\WindowsPowerShell\v1.0\powershell.exe"
+    }
+
+    if (-not (
+            Test-Path -LiteralPath $ps64
+        )) {
+
+        throw "PowerShell 64 bits nao encontrado."
+    }
+
+    & $ps64 `
+        -NoProfile `
+        -ExecutionPolicy Bypass `
+        -File $scriptTc `
+        -PastaNx $PastaNx
+
+    if ($LASTEXITCODE -ne 0) {
+
+        throw `
+            "A importacao Teamcenter falhou com codigo $LASTEXITCODE."
+    }
+
+    Escreve-Sucesso "Importacao Teamcenter concluida."
+}
+
+
+# ============================================================
+# EXECUCAO PRINCIPAL
+# ============================================================
+
+try {
+
+    Testar-Ambiente
+
+    $vault =
+    Connect-VaultPdm
+
+    $selecao =
+    Get-CodigoPdm `
+        -Vault $vault
+
+    $codigoDigitado =
+    $selecao.Codigo
+
+    $listaResultados =
+    @(
+        $selecao.Resultados
+    )
+
+    $pastaDestinoFinal =
+    Get-PastaDestinoCodigo `
+        -Codigo $codigoDigitado
+
+    Copy-ArquivosPdm `
+        -Vault $vault `
+        -Resultados $listaResultados `
+        -PastaDestinoCodigo $pastaDestinoFinal
+
+    $arquivoPrincipal =
+    Get-ArquivoSolidWorksPrincipal `
+        -Pasta $pastaDestinoFinal
 
     Escreve-Info `
-        "Saida: $pastaNxMigrated"
+        "Arquivo principal: $($arquivoPrincipal.Name)"
 
+    $pastaNxMigrated =
+    Invoke-ConversaoNx `
+        -PastaEntrada $pastaDestinoFinal
+
+    $resultadoConversao =
+    Show-ResultadoConversao `
+        -PastaNx $pastaNxMigrated
+
+    if ($resultadoConversao.Prt.Count -eq 0) {
+
+        throw `
+            "Nenhum PRT esta disponivel para importar no Teamcenter."
+    }
+
+    Invoke-ImportacaoTeamcenter `
+        -PastaNx $pastaNxMigrated
+
+    Escreve-Titulo "PROCESSO CONCLUIDO"
+
+    Escreve-Sucesso `
+        "Codigo processado: $codigoDigitado"
+
+    Escreve-Info `
+        "Saida NX: $pastaNxMigrated"
+
+    exit 0
 }
-
-
 catch {
 
     Write-Host ""
-    Escreve-Erro $_.Exception.Message
+
+    Escreve-Erro `
+        $_.Exception.Message
+
+    Write-Host ""
+    Write-Host "[ERRO COMPLETO]" -ForegroundColor DarkGray
+    Write-Host $_.Exception.ToString() -ForegroundColor DarkGray
     Write-Host ""
 
     exit 1
-
 }
 finally {
 
@@ -1237,16 +1495,13 @@ finally {
         senhaPlana `
         -ErrorAction SilentlyContinue
 
-    if (Test-Path $wrapperTemporario) {
+    if (
+        Test-Path -LiteralPath $wrapperTemporario
+    ) {
 
         Remove-Item `
             -LiteralPath $wrapperTemporario `
             -Force `
             -ErrorAction SilentlyContinue
-
     }
-
 }
-
-Write-Host ""
-exit 0
