@@ -2,7 +2,7 @@
 setlocal
 
 set "SCRIPT_DIR=%~dp0"
-set "PS_SCRIPT=%SCRIPT_DIR%extrai_peca.ps1"
+set "PS_SCRIPT=%SCRIPT_DIR%extract_part.ps1"
 set "PS32=%WINDIR%\SysWOW64\WindowsPowerShell\v1.0\powershell.exe"
 
 if not exist "%PS32%" (
