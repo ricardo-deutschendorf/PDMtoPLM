@@ -51,7 +51,136 @@ if (-not (
 
 . $teamcenterFunctionsPath
 
+$nxNamesFile =
+Join-Path `
+    $PastaNx `
+    "NomesNx.txt"
 
+$nxNames =
+@{}
+
+if (-not (
+        Test-Path `
+            -LiteralPath $nxNamesFile `
+            -PathType Leaf
+    )) {
+
+    throw `
+        "NomesNx.txt nao encontrado: $nxNamesFile"
+}
+
+Get-Content `
+    -LiteralPath $nxNamesFile `
+    -Encoding UTF8 |
+ForEach-Object {
+
+    $parts =
+    $_ -split '\|', 2
+
+    if ($parts.Count -ne 2) {
+        return
+    }
+
+    $fileCode =
+    $parts[0].Trim()
+
+    if ($fileCode -match '^(.+)_\d+$') {
+        $fileCode =
+        $Matches[1]
+    }
+
+    $attributeValue =
+    $parts[1].Trim()
+
+    $itemDescription =
+    $attributeValue
+
+    if ($attributeValue -match '^[^#]+#(.*?)#?$') {
+        $itemDescription =
+        $Matches[1].Trim()
+    }
+
+    if (
+        -not [string]::IsNullOrWhiteSpace($fileCode) -and
+        -not [string]::IsNullOrWhiteSpace($itemDescription)
+    ) {
+        $nxNames[$fileCode] =
+        $itemDescription
+    }
+}
+
+$aliasFallback = @{
+    "_2" = "_1"
+    "_4" = "_3"
+    "_6" = "_5"
+}
+
+foreach ($alias in $aliasFallback.Keys) {
+
+    $sourceAlias =
+    $aliasFallback[$alias]
+
+    if (
+        -not $nxNames.ContainsKey($alias) -and
+        $nxNames.ContainsKey($sourceAlias)
+    ) {
+        $nxNames[$alias] =
+        $nxNames[$sourceAlias]
+    }
+}
+
+if (-not $nxNames.ContainsKey("_7")) {
+    $nxNames["_7"] =
+    "PORCA REBITE CAB CONICA E_P"
+}
+
+$structureNamesFile =
+Join-Path `
+(Split-Path -Parent $PastaNx) `
+    "estrutura_montagem.txt"
+
+if (Test-Path -LiteralPath $structureNamesFile) {
+
+    Get-Content `
+        -LiteralPath $structureNamesFile `
+        -Encoding UTF8 |
+    ForEach-Object {
+
+        $line =
+        $_.Trim()
+
+        # Remove o prefixo "MONTAGEM: " se existir, para tratar a linha do item pai igual as outras
+        $line =
+        $line -replace '^MONTAGEM:\s*', ''
+
+        if ($line -match '^(\d+\.\d+\.\d+)[_#\s-]+(.+)$') {
+
+            $code =
+            $Matches[1].Trim()
+
+            $description =
+            $Matches[2].Trim()
+
+            $description =
+            $description -replace '__sld(prt|asm)$', ''
+
+            $description =
+            $description.Trim('_', '#', ' ')
+
+            if (
+                -not [string]::IsNullOrWhiteSpace($description) -and
+                -not $nxNames.ContainsKey($code)
+            ) {
+                $nxNames[$code] =
+                $description
+
+                Write-Host `
+                    "  [OK] Nome recuperado da estrutura NX: $code = $description" `
+                    -ForegroundColor Green
+            }
+        }
+    }
+}
 # ============================================================
 # CONSOLE OUTPUT
 # ============================================================
@@ -112,7 +241,6 @@ function Write-Info {
 # ============================================================
 # NX INPUT VALIDATION
 # ============================================================
-
 function Get-NxPartFiles {
 
     param(
@@ -136,12 +264,12 @@ function Get-NxPartFiles {
             -LiteralPath $FolderPath `
             -Filter "*.prt" `
             -File `
-            -Recurse `
-            -ErrorAction Stop
+            -Recurse
     ) |
     Where-Object {
 
-        $_.BaseName -notmatch '^[_-]?\d+$'
+        $_.BaseName -notmatch '^[_-]?\d+$' -and
+        $_.BaseName -notmatch '^\d+\.\d+\.\d+_\d+$'
     }
 
     if ($partFiles.Count -eq 0) {
@@ -157,7 +285,6 @@ function Get-NxPartFiles {
 # ============================================================
 # TEAMCENTER PART IMPORT
 # ============================================================
-
 function Import-NxPartToTeamcenter {
 
     param(
@@ -168,25 +295,15 @@ function Import-NxPartToTeamcenter {
     $sourcePartCode =
     $PartFile.BaseName
 
-    $originalFolder =
-    $PartFile.Directory.Parent.FullName
+    $descriptionCode =
+    $sourcePartCode -replace '_\d+$', ''
 
-    $originalSolidWorksFile =
-    Get-ChildItem `
-        -LiteralPath $originalFolder `
-        -Filter "*.SLDPRT" `
-        -File |
-    Select-Object -First 1
+    $itemDescription =
+    $null
 
-    $itemDescription = $null
-
-    if ($null -ne $originalSolidWorksFile) {
-
-        if ($originalSolidWorksFile.BaseName -match '#(.*?)#') {
-
-            $itemDescription =
-            $Matches[1]
-        }
+    if ($nxNames.ContainsKey($descriptionCode)) {
+        $itemDescription =
+        $nxNames[$descriptionCode]
     }
 
     Write-Host ""
@@ -222,6 +339,12 @@ function Import-NxPartToTeamcenter {
     Get-TeamcenterRevision `
         -Item $teamcenterItem
 
+    if ($null -eq $teamcenterRevision) {
+
+        throw `
+            "Teamcenter revision was not found for '$teamcenterCode'."
+    }
+
     if (-not [string]::IsNullOrWhiteSpace($itemDescription)) {
 
         $itemProperties =
@@ -247,15 +370,6 @@ function Import-NxPartToTeamcenter {
             $itemDescription
         )
 
-        [ImportarGD.Controller.Functions]::setProperty(
-            $teamcenterRevision,
-            $revisionProperties
-        )
-
-        $revisionProperties =
-        New-Object `
-            "System.Collections.Generic.Dictionary``2[System.String,System.String]"
-
         $revisionProperties.Add(
             "gd5DescReduzida",
             $itemDescription
@@ -270,19 +384,22 @@ function Import-NxPartToTeamcenter {
             $teamcenterRevision,
             $revisionProperties
         )
+
+        Write-Success `
+            -Message "Nome NX aplicado: $sourcePartCode = $itemDescription"
+    }
+    else {
+
+        Write-Host `
+            "  [WARNING] Nome NX nao encontrado para: $sourcePartCode" `
+            -ForegroundColor Yellow
     }
 
-    if ($null -eq $teamcenterRevision) {
-
-        throw `
-            "Teamcenter revision was not found for '$teamcenterCode'."
-    }
     $importResult =
     Import-TeamcenterPrt `
         -Revision $teamcenterRevision `
         -ItemCode $teamcenterCode `
         -FilePath $PartFile.FullName
-
 
     Write-Success `
         -Message "PRT imported: $teamcenterCode"
@@ -297,7 +414,6 @@ function Import-NxPartToTeamcenter {
         ImportResult   = $importResult
     }
 }
-
 
 # ============================================================
 # MAIN EXECUTION
@@ -321,6 +437,86 @@ try {
         Get-NxPartFiles `
             -FolderPath $PastaNx
     )
+    $posFile =
+    Join-Path `
+        $PastaNx `
+        "Posicionamento.txt"
+
+    Write-Host ""
+    Write-Host "POS FILE:"
+    Write-Host $posFile
+
+    if (-not (Test-Path $posFile)) {
+        throw "Posicionamento.txt nao encontrado: $posFile"
+    }
+
+    Write-Section `
+        -Title "VIEW DETECTADA PELO NX"
+    $estruturaView =
+    [System.Collections.Generic.List[object]]::new()
+
+    Get-Content -LiteralPath $posFile |
+    ForEach-Object {
+
+        $parts =
+        $_ -split '\|', 3
+
+        if ($parts.Count -ne 3) {
+            return
+        }
+
+        $parentCode =
+        $parts[0].Trim()
+
+        $occurrenceCode =
+        $parts[1].Trim()
+
+        $childCode =
+        $occurrenceCode
+
+        if ($occurrenceCode -match '^(.+)_\d+$') {
+            $childCode =
+            $Matches[1]
+        }
+
+        $transform =
+        $parts[2].Trim() -replace ',', '.'
+
+        if (-not [string]::IsNullOrWhiteSpace($occurrenceCode)) {
+
+            $estruturaView.Add(
+                [PSCustomObject]@{
+                    Parent         = $parentCode
+                    Child          = $childCode
+                    OccurrenceCode = $occurrenceCode
+                    Transform      = $transform
+                }
+            )
+        }
+    }
+
+    Write-Host ""
+    Write-Host "MONTAGEM:"
+    Write-Host "  $($estruturaView[0].Parent)"
+
+    Write-Host ""
+    Write-Host "VIEW ESPERADA:"
+    Write-Host ""
+
+    $estruturaView |
+    Select-Object -ExpandProperty Child |
+    Sort-Object -Unique |
+    ForEach-Object {
+
+        Write-Host "  $_"
+    }
+
+    Write-Host ""
+    Write-Host "ARQUIVOS NX ENCONTRADOS"
+
+    foreach ($f in $nxPartFiles) {
+        Write-Host $f.FullName
+    }
 
     Write-Success `
         -Message "$($nxPartFiles.Count) PRT file(s) found."
@@ -330,6 +526,16 @@ try {
 
     Write-Section `
         -Title "TEAMCENTER IMPORT"
+
+    Write-Host ""
+    Write-Host "ATENCAO: as proximas linhas vao CRIAR itens reais no Teamcenter." -ForegroundColor Yellow
+    $confirmacao = Read-Host "Digite 'sim' para continuar, ou qualquer outra coisa para abortar"
+
+    if ($confirmacao -ne "sim") {
+        Write-Host ""
+        Write-Host "Abortado pelo usuario. Nenhum item foi criado." -ForegroundColor Yellow
+        exit 0
+    }
 
     $importResults =
     [System.Collections.Generic.List[object]]::new()
@@ -354,6 +560,182 @@ try {
             -Message "$($result.SourcePartCode) -> $($result.TeamcenterCode)"
     }
 
+    $parentSourceCode =
+    $estruturaView |
+    Select-Object -ExpandProperty Parent -First 1
+
+    $parentResult =
+    $importResults |
+    Where-Object {
+        $_.SourcePartCode -eq $parentSourceCode
+    } |
+    Select-Object -First 1
+
+    if ($null -eq $parentResult) {
+        throw "Item pai nao encontrado nos resultados: $parentSourceCode"
+    }
+    $parentItem =
+    Get-TeamcenterItem `
+        -ItemCode $parentResult.TeamcenterCode
+
+    $parentRevision =
+    Get-TeamcenterRevision `
+        -Item $parentItem
+
+    $policyProps =
+    New-Object `
+        'System.Collections.Generic.List[string[]]'
+
+    $policyProps.Add(
+        [string[]]@(
+            "BOMLine",
+            "bl_child_lines"
+        )
+    )
+
+    [ImportarGD.Controller.Functions]::setObjectPolicy(
+        $policyProps
+    )
+
+    try {
+
+        foreach ($occurrence in $estruturaView) {
+
+            $resolvedChildCode =
+            $occurrence.Child
+
+            if ($nxNames.ContainsKey($occurrence.OccurrenceCode)) {
+                $resolvedChildCode =
+                $nxNames[$occurrence.OccurrenceCode]
+            }
+            elseif ($nxNames.ContainsKey($occurrence.Child)) {
+                $resolvedChildCode =
+                $nxNames[$occurrence.Child]
+            }
+
+            $childResult =
+            $importResults |
+            Where-Object {
+                $_.SourcePartCode -ieq $resolvedChildCode
+            } |
+            Select-Object -First 1
+
+            if ($null -eq $childResult) {
+
+                Write-Host `
+                    "  [WARNING] Filho nao importado: $($occurrence.Child)" `
+                    -ForegroundColor Yellow
+
+                continue
+            }
+
+            $childItem =
+            Get-TeamcenterItem `
+                -ItemCode $childResult.TeamcenterCode
+
+            $childRevision =
+            Get-TeamcenterRevision `
+                -Item $childItem
+
+            if ($null -eq $childRevision) {
+
+                Write-Host `
+                    "  [WARNING] Revisao nao encontrada: $($occurrence.Child)" `
+                    -ForegroundColor Yellow
+
+                continue
+            }
+
+            $singleChildList =
+            New-Object `
+                'System.Collections.Generic.List[Teamcenter.Soa.Client.Model.Strong.ItemRevision]'
+
+            $singleChildList.Add(
+                $childRevision
+            )
+
+            $attributes =
+            New-Object `
+                'System.Collections.Generic.List[System.Collections.Hashtable]'
+
+            $occurrenceAttributes =
+            New-Object System.Collections.Hashtable
+
+            $occurrenceAttributes.Add(
+                "bl_plmxml_occ_xform",
+                $occurrence.Transform
+            )
+
+            $attributes.Add(
+                $occurrenceAttributes
+            )
+
+            Write-Info `
+                -Message "Adicionando ocorrencia: $($occurrence.OccurrenceCode)"
+
+            Write-Info `
+                -Message "Transform: $($occurrence.Transform)"
+
+            $occurrenceParentResult =
+            $importResults |
+            Where-Object {
+                $_.SourcePartCode -ieq $occurrence.Parent
+            } |
+            Select-Object -First 1
+
+            if ($null -eq $occurrenceParentResult) {
+
+                Write-Host `
+                    "  [WARNING] Pai nao localizado: $($occurrence.Parent)" `
+                    -ForegroundColor Yellow
+
+                continue
+            }
+
+            $occurrenceParentItem =
+            Get-TeamcenterItem `
+                -ItemCode $occurrenceParentResult.TeamcenterCode
+
+            $occurrenceParentRevision =
+            Get-TeamcenterRevision `
+                -Item $occurrenceParentItem
+
+            if ($null -eq $occurrenceParentRevision) {
+
+                Write-Host `
+                    "  [WARNING] Revisao do pai nao localizada: $($occurrence.Parent)" `
+                    -ForegroundColor Yellow
+
+                continue
+            }
+
+            [ImportarGD.Controller.Functions]::addAllChildrenInBOM(
+                $occurrenceParentRevision,
+                $singleChildList,
+                $attributes
+            )
+
+        }
+
+        Write-Host ""
+        Write-Success `
+            -Message "BOM criada com posicionamento."
+    }
+    catch {
+
+        Write-Host ""
+
+        Write-Failure `
+            -Message "Erro ao criar BOM: $($_.Exception.Message)"
+
+        throw
+    }
+    finally {
+
+        Close-LeftoverBomWindow `
+            -Revision $parentRevision
+    }
+
     Write-Host ""
 
     Write-Success `
@@ -365,8 +747,6 @@ try {
     exit 0
 }
 catch {
-
-    Write-Host ""
 
     Write-Failure `
         -Message $_.Exception.Message

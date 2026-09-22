@@ -84,7 +84,6 @@ function Write-Success {
     Write-Host "  [OK] $Message" -ForegroundColor Green
 }
 
-
 function Write-Failure {
 
     param(
@@ -207,48 +206,105 @@ Module WrapperImportSW2NX
             )
 
             Dim theSession As Session =
-                Session.GetSession()
+    Session.GetSession()
 
-            WriteLog("NX session obtained.")
+WriteLog("NX session obtained.")
 
-            Dim loadStatus As PartLoadStatus =
-                Nothing
+Dim loadStatus As PartLoadStatus =
+    Nothing
 
-            Dim openedPart As BasePart =
-                theSession.Parts.OpenBaseDisplay(
-                    solidWorksFile,
-                    loadStatus
-                )
+Dim openedPart As BasePart =
+    theSession.Parts.OpenBaseDisplay(
+        solidWorksFile,
+        loadStatus
+    )
 
-            If loadStatus IsNot Nothing Then
-                loadStatus.Dispose()
-            End If
+If loadStatus IsNot Nothing Then
+    loadStatus.Dispose()
+End If
 
-            If openedPart Is Nothing Then
+If openedPart Is Nothing Then
 
-                Throw New Exception(
-                    "OpenBaseDisplay returned NULL."
-                )
+    Throw New Exception(
+        "OpenBaseDisplay returned NULL."
+    )
 
-            End If
+End If
 
-            WriteLog(
-                "Opened part = " &
-                openedPart.FullPath
-            )
+WriteLog(
+    "Opened part = " &
+    openedPart.FullPath
+)
 
-            If theSession.Parts.Display Is Nothing Then
+If theSession.Parts.Display Is Nothing Then
 
-                Throw New Exception(
-                    "Session.Parts.Display remains NULL."
-                )
+    Throw New Exception(
+        "Session.Parts.Display remains NULL."
+    )
 
-            End If
+End If
 
-            WriteLog(
-                "Active display = " &
-                theSession.Parts.Display.FullPath
-            )
+WriteLog(
+    "Active display = " &
+    theSession.Parts.Display.FullPath
+)
+
+Try
+
+    Dim structureLog As String =
+        Path.Combine(
+            folderLoad,
+            "estrutura_montagem.txt"
+        )
+    If File.Exists(structureLog) Then
+        File.Delete(structureLog)
+    End If
+
+    Dim workPart As Part =
+        CType(
+            theSession.Parts.Display,
+            Part
+        )
+
+    If workPart.ComponentAssembly IsNot Nothing AndAlso
+       workPart.ComponentAssembly.RootComponent IsNot Nothing Then
+
+        File.AppendAllText(
+            structureLog,
+            "MONTAGEM: " &
+            workPart.Leaf & vbCrLf
+        )
+
+        DumpComponents(
+            workPart.ComponentAssembly.RootComponent,
+            structureLog,
+            0
+        )
+
+        WriteLog(
+            "Estrutura exportada: " &
+            structureLog
+        )
+
+    Else
+
+        WriteLog(
+            "Nenhuma estrutura de montagem encontrada."
+        )
+
+    End If
+
+Catch ex As Exception
+
+    WriteLog(
+        "ERRO AO EXPORTAR ESTRUTURA:"
+    )
+
+    WriteLog(
+        ex.ToString()
+    )
+
+End Try
 
             Dim libraryPath As String =
                 "\\perto38-novo\NX_Custom\ImportSW2NX.dll"
@@ -343,6 +399,12 @@ Module WrapperImportSW2NX
             End If
 
             ValidateGeneratedFiles(folderLoad)
+
+            ExportNxPartNames(
+            theSession,
+            folderLoad
+            )
+
 
             WriteLog(
                 "PROCESS COMPLETED."
@@ -725,6 +787,216 @@ Module WrapperImportSW2NX
         Return Session.LibraryUnloadOption.Immediately
 
     End Function
+
+    Private Sub DumpComponents(
+    ByVal component As NXOpen.Assemblies.Component,
+    ByVal logFile As String,
+    ByVal level As Integer
+)
+
+    Try
+
+        Dim prefix As String =
+            New String(" "c, level * 2)
+
+        For Each child As NXOpen.Assemblies.Component In
+            component.GetChildren()
+
+            File.AppendAllText(
+                logFile,
+                prefix &
+                child.DisplayName &
+                vbCrLf
+            )
+
+            DumpComponents(
+                child,
+                logFile,
+                level + 1
+            )
+
+        Next
+
+    Catch
+    End Try
+
+End Sub
+
+Private Sub ExportNxPartNames(
+    ByVal theSession As Session,
+    ByVal inputFolder As String
+)
+
+    Dim migratedFolder As String =
+        Path.Combine(
+            inputFolder,
+            "NXmigratedFiles"
+        )
+
+    Dim outputFile As String =
+        Path.Combine(
+            migratedFolder,
+            "NomesNx.txt"
+        )
+
+    If Not Directory.Exists(migratedFolder) Then
+
+        WriteLog(
+            "NXmigratedFiles nao encontrada para exportar nomes."
+        )
+
+        Return
+
+    End If
+
+    If File.Exists(outputFile) Then
+        File.Delete(outputFile)
+    End If
+
+    Dim attributesOutputFile As String =
+    Path.Combine(
+        migratedFolder,
+        "AtributosNx.txt"
+    )
+
+If File.Exists(attributesOutputFile) Then
+    File.Delete(attributesOutputFile)
+End If
+
+    Dim prtFiles() As String =
+        Directory.GetFiles(
+            migratedFolder,
+            "*.prt",
+            SearchOption.TopDirectoryOnly
+        )
+
+    For Each prtFile As String In prtFiles
+
+        Dim fileCode As String =
+            Path.GetFileNameWithoutExtension(
+                prtFile
+            )
+
+        Try
+
+            Dim loadStatus As PartLoadStatus =
+                Nothing
+
+            Dim nxPart As BasePart =
+                theSession.Parts.OpenBaseDisplay(
+                    prtFile,
+                    loadStatus
+                )
+
+            If loadStatus IsNot Nothing Then
+                loadStatus.Dispose()
+            End If
+
+            If nxPart Is Nothing Then
+
+                WriteLog(
+                    "Nao foi possivel abrir: " &
+                    prtFile
+                )
+
+                Continue For
+
+            End If
+
+            Dim attributeValue As String = ""
+
+            Dim attributes() As NXObject.AttributeInformation =
+                nxPart.GetUserAttributes()
+
+File.AppendAllText(
+    attributesOutputFile,
+    "====================================" & vbCrLf &
+    "ARQUIVO: " & fileCode & vbCrLf
+)
+
+For Each attributeInfo As NXObject.AttributeInformation In attributes
+
+    Dim attributeText As String = ""
+
+    Try
+        attributeText =
+            attributeInfo.StringValue
+    Catch
+        attributeText =
+            "<NAO STRING>"
+    End Try
+
+    File.AppendAllText(
+        attributesOutputFile,
+        attributeInfo.Title &
+        "=" &
+        attributeText &
+        vbCrLf
+    )
+
+Next
+
+            For Each attributeInfo As NXObject.AttributeInformation In attributes
+
+                If attributeInfo.Title =
+                    "INTEROP_FEATURE_PART_NAME" Then
+
+                    attributeValue =
+                        attributeInfo.StringValue
+
+                    Exit For
+
+                End If
+
+            Next
+
+            If Not String.IsNullOrWhiteSpace(
+                attributeValue
+            ) Then
+
+                File.AppendAllText(
+                    outputFile,
+                    fileCode &
+                    "|" &
+                    attributeValue.Trim() &
+                    vbCrLf
+                )
+
+                WriteLog(
+                    "NOME NX: " &
+                    fileCode &
+                    " = " &
+                    attributeValue
+                )
+
+            Else
+
+                WriteLog(
+                    "INTEROP_FEATURE_PART_NAME nao encontrado: " &
+                    fileCode
+                )
+
+            End If
+
+        Catch ex As Exception
+
+            WriteLog(
+                "ERRO AO LER NOME NX: " &
+                fileCode &
+                " - " &
+                ex.Message
+            )
+
+        End Try
+
+    Next
+
+    WriteLog(
+        "Arquivo criado: " &
+        outputFile
+    )
+
+End Sub
 
 End Module
 '@
@@ -1424,7 +1696,8 @@ function Invoke-NxConversion {
         $temporaryWrapperPath `
         "-args" `
         $InputFolderPath `
-        $companyName
+        $companyName |
+    Out-Host
 
     $nxExitCode =
     $LASTEXITCODE
@@ -1617,6 +1890,50 @@ try {
     Show-ConversionResult `
         -NxFolderPath $nxMigratedFolderPath
 
+    Write-Section `
+        -Title "TESTES PRE-IMPORT"
+
+    $posFile =
+    Join-Path `
+        $nxMigratedFolderPath `
+        "Posicionamento.txt"
+
+    $children =
+    [System.Collections.Generic.HashSet[string]]::new()
+
+    Get-Content $posFile |
+    ForEach-Object {
+
+        $parts = $_.Split('|')
+
+        if ($parts.Count -lt 2) {
+            return
+        }
+
+        $child = $parts[1]
+
+        # remove _1 do NX
+        $child =
+        $child -replace '_\d+$', ''
+
+        $null =
+        $children.Add($child)
+    }
+
+    Write-Host ""
+    Write-Host "MONTAGEM:"
+    Write-Host "  $selectedPartCode"
+
+    Write-Host ""
+    Write-Host "VIEW ESPERADA:"
+    Write-Host ""
+
+    $children |
+    Sort-Object |
+    ForEach-Object {
+
+        Write-Host "  $_"
+    }
     if (
         $conversionResult.PrtFiles.Count -eq 0
     ) {
@@ -1659,13 +1976,7 @@ finally {
         plainTextPassword `
         -ErrorAction SilentlyContinue
 
-    if (
-        Test-Path -LiteralPath $temporaryWrapperPath
-    ) {
-
-        Remove-Item `
-            -LiteralPath $temporaryWrapperPath `
-            -Force `
-            -ErrorAction SilentlyContinue
-    }
+    Write-Host ""
+    Write-Host "Wrapper mantido para diagnostico:" -ForegroundColor Yellow
+    Write-Host $temporaryWrapperPath
 }
