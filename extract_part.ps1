@@ -1542,42 +1542,141 @@ function Get-MainSolidWorksFile {
 
     param(
         [Parameter(Mandatory = $true)]
-        [string]$FolderPath
+        [ValidateNotNullOrEmpty()]
+        [string]$FolderPath,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$PartCode
     )
 
-    $mainFile =
-    Get-ChildItem `
-        -LiteralPath $FolderPath `
-        -File `
-        -ErrorAction SilentlyContinue |
-    Where-Object {
-        $_.Extension -ieq ".SLDASM"
-    } |
-    Select-Object -First 1
+    if (-not (
+            Test-Path `
+                -LiteralPath $FolderPath `
+                -PathType Container
+        )) {
 
-    if ($null -eq $mainFile) {
+        throw "Pasta local nao encontrada: $FolderPath"
+    }
 
-        $mainFile =
+    $escapedPartCode =
+    [System.Text.RegularExpressions.Regex]::Escape(
+        $PartCode
+    )
+
+    # Exemplos aceitos:
+    # 260.02.002#DESCRICAO#.SLDPRT
+    # 260.02.002-1#DESCRICAO#.SLDPRT
+    # 270.27.355#DESCRICAO#.SLDASM
+    $mainFilePattern =
+    "^$escapedPartCode(?:-\d+)?(?:#|$)"
+
+    $candidateFiles =
+    @(
         Get-ChildItem `
             -LiteralPath $FolderPath `
             -File `
-            -ErrorAction SilentlyContinue |
+            -ErrorAction Stop |
         Where-Object {
-            $_.Extension -ieq ".SLDPRT"
-        } |
-        Select-Object -First 1
+
+            (
+                $_.Extension -ieq ".SLDASM" -or
+                $_.Extension -ieq ".SLDPRT"
+            ) -and
+            $_.BaseName -match $mainFilePattern
+        }
+    )
+
+    if ($candidateFiles.Count -eq 0) {
+
+        $availableFiles =
+        @(
+            Get-ChildItem `
+                -LiteralPath $FolderPath `
+                -File |
+            Select-Object -ExpandProperty Name
+        )
+
+        throw (
+            "Nenhum SLDASM ou SLDPRT principal foi encontrado " +
+            "para o codigo '$PartCode'. Arquivos locais: " +
+            ($availableFiles -join ", ")
+        )
     }
 
-    if ($null -eq $mainFile) {
+    $assemblyFile =
+    $candidateFiles |
+    Where-Object {
+        $_.Extension -ieq ".SLDASM"
+    } |
+    Sort-Object Name |
+    Select-Object -First 1
 
-        throw `
-            "No SLDPRT or SLDASM file was found."
+    if ($null -ne $assemblyFile) {
+        return $assemblyFile
     }
 
-    return $mainFile
+    $partFile =
+    $candidateFiles |
+    Where-Object {
+        $_.Extension -ieq ".SLDPRT"
+    } |
+    Sort-Object Name |
+    Select-Object -First 1
+
+    if ($null -eq $partFile) {
+
+        throw (
+            "Nao foi possivel determinar o arquivo principal " +
+            "do codigo '$PartCode'."
+        )
+    }
+
+    return $partFile
 }
+function Get-SolidWorksDocumentInfo {
 
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.IO.FileInfo]$MainFile
+    )
 
+    $extension =
+    $MainFile.Extension.ToUpperInvariant()
+
+    switch ($extension) {
+
+        ".SLDPRT" {
+
+            return [PSCustomObject]@{
+                Type        = "Part"
+                IsPart      = $true
+                IsAssembly  = $false
+                Description = "Peca individual"
+                MainFile    = $MainFile
+            }
+        }
+
+        ".SLDASM" {
+
+            return [PSCustomObject]@{
+                Type        = "Assembly"
+                IsPart      = $false
+                IsAssembly  = $true
+                Description = "Montagem"
+                MainFile    = $MainFile
+            }
+        }
+
+        default {
+
+            throw (
+                "Tipo SolidWorks nao suportado: " +
+                $MainFile.FullName
+            )
+        }
+    }
+}
 # ============================================================
 # NX CONVERTED FILES
 # ============================================================
@@ -1776,12 +1875,18 @@ function Show-ConversionResult {
 # ============================================================
 # TEAMCENTER IMPORT
 # ============================================================
-
 function Invoke-TeamcenterImport {
 
     param(
         [Parameter(Mandatory = $true)]
-        [string]$NxFolderPath
+        [string]$NxFolderPath,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateSet(
+            "Part",
+            "Assembly"
+        )]
+        [string]$DocumentType
     )
 
     Write-Section `
@@ -1793,7 +1898,9 @@ function Invoke-TeamcenterImport {
         "import_toTeamcenter.ps1"
 
     if (-not (
-            Test-Path -LiteralPath $teamcenterImportScript
+            Test-Path `
+                -LiteralPath $teamcenterImportScript `
+                -PathType Leaf
         )) {
 
         throw `
@@ -1806,7 +1913,9 @@ function Invoke-TeamcenterImport {
         "Sysnative\WindowsPowerShell\v1.0\powershell.exe"
 
     if (-not (
-            Test-Path -LiteralPath $powerShell64Path
+            Test-Path `
+                -LiteralPath $powerShell64Path `
+                -PathType Leaf
         )) {
 
         $powerShell64Path =
@@ -1816,18 +1925,24 @@ function Invoke-TeamcenterImport {
     }
 
     if (-not (
-            Test-Path -LiteralPath $powerShell64Path
+            Test-Path `
+                -LiteralPath $powerShell64Path `
+                -PathType Leaf
         )) {
 
         throw `
             "64-bit Windows PowerShell was not found."
     }
 
+    Write-Info `
+        -Message "Document type: $DocumentType"
+
     & $powerShell64Path `
         -NoProfile `
         -ExecutionPolicy Bypass `
         -File $teamcenterImportScript `
-        -PastaNx $NxFolderPath
+        -PastaNx $NxFolderPath `
+        -DocumentType $DocumentType
 
     $teamcenterExitCode =
     $LASTEXITCODE
@@ -1841,8 +1956,6 @@ function Invoke-TeamcenterImport {
     Write-Success `
         -Message "Teamcenter import completed."
 }
-
-
 # ============================================================
 # MAIN EXECUTION
 # ============================================================
@@ -1877,10 +1990,27 @@ try {
 
     $mainSolidWorksFile =
     Get-MainSolidWorksFile `
-        -FolderPath $partDownloadPath
+        -FolderPath $partDownloadPath `
+        -PartCode $selectedPartCode
+
+    $solidWorksDocument =
+    Get-SolidWorksDocumentInfo `
+        -MainFile $mainSolidWorksFile
 
     Write-Info `
         -Message "Main file: $($mainSolidWorksFile.Name)"
+
+    Write-Section `
+        -Title "SOLIDWORKS DOCUMENT TYPE"
+
+    Write-Success `
+        -Message "Tipo identificado: $($solidWorksDocument.Description)"
+
+    Write-Info `
+        -Message "DocumentType: $($solidWorksDocument.Type)"
+
+    Write-Info `
+        -Message "Extensao: $($mainSolidWorksFile.Extension)"
 
     $nxMigratedFolderPath =
     Invoke-NxConversion `
@@ -1891,33 +2021,75 @@ try {
         -NxFolderPath $nxMigratedFolderPath
 
     Write-Section `
-        -Title "TESTES PRE-IMPORT"
+    -Title "TESTES PRE-IMPORT"
 
-    $posFile =
-    Join-Path `
-        $nxMigratedFolderPath `
-        "Posicionamento.txt"
+$posFile =
+Join-Path `
+    $nxMigratedFolderPath `
+    "Posicionamento.txt"
+
+if ($solidWorksDocument.IsPart) {
+
+    Write-Success `
+        -Message "Peca individual identificada."
+
+    Write-Info `
+        -Message "Posicionamento.txt nao e necessario."
+
+    Write-Info `
+        -Message "Somente o PRT sera enviado ao importador."
+}
+elseif ($solidWorksDocument.IsAssembly) {
+
+    if (-not (
+            Test-Path `
+                -LiteralPath $posFile `
+                -PathType Leaf
+        )) {
+
+        throw (
+            "Montagem identificada, mas Posicionamento.txt " +
+            "nao foi encontrado: $posFile"
+        )
+    }
+
+    Write-Success `
+        -Message "Montagem identificada."
+
+    Write-Success `
+        -Message "Posicionamento.txt encontrado."
 
     $children =
-    [System.Collections.Generic.HashSet[string]]::new()
+    [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
 
-    Get-Content $posFile |
+    Get-Content `
+        -LiteralPath $posFile `
+        -Encoding Default |
     ForEach-Object {
 
-        $parts = $_.Split('|')
+        $parts =
+        $_ -split '\|', 3
 
         if ($parts.Count -lt 2) {
             return
         }
 
-        $child = $parts[1]
+        $child =
+        $parts[1].Trim()
 
-        # remove _1 do NX
+       if ([System.String]::IsNullOrWhiteSpace($child)) {
+    return
+}
+
         $child =
         $child -replace '_\d+$', ''
 
         $null =
-        $children.Add($child)
+        $children.Add(
+            $child
+        )
     }
 
     Write-Host ""
@@ -1931,9 +2103,14 @@ try {
     $children |
     Sort-Object |
     ForEach-Object {
-
         Write-Host "  $_"
     }
+}
+else {
+
+    throw `
+        "Nao foi possivel identificar o tipo do documento SolidWorks."
+}
     if (
         $conversionResult.PrtFiles.Count -eq 0
     ) {
@@ -1942,8 +2119,9 @@ try {
             "No PRT file is available for Teamcenter import."
     }
 
-    Invoke-TeamcenterImport `
-        -NxFolderPath $nxMigratedFolderPath
+Invoke-TeamcenterImport `
+    -NxFolderPath $nxMigratedFolderPath `
+    -DocumentType $solidWorksDocument.Type
 
     Write-Section `
         -Title "PROCESS COMPLETED"
@@ -1968,6 +2146,7 @@ catch {
     Write-Host $_.Exception.ToString() -ForegroundColor DarkGray
     Write-Host ""
 
+    Write-Host "Finalizando..."
     exit 1
 }
 finally {

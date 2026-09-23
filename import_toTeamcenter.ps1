@@ -1,9 +1,15 @@
 param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
-    [string]$PastaNx
-)
+    [string]$PastaNx,
 
+    [Parameter(Mandatory = $true)]
+    [ValidateSet(
+        "Part",
+        "Assembly"
+    )]
+    [string]$DocumentType
+)
 # ============================================================
 # TEAMCENTER IMPORT
 # Imports generated NX PRT files into Teamcenter.
@@ -442,77 +448,106 @@ try {
         $PastaNx `
         "Posicionamento.txt"
 
-    Write-Host ""
-    Write-Host "POS FILE:"
-    Write-Host $posFile
-
-    if (-not (Test-Path $posFile)) {
-        throw "Posicionamento.txt nao encontrado: $posFile"
-    }
-
-    Write-Section `
-        -Title "VIEW DETECTADA PELO NX"
     $estruturaView =
     [System.Collections.Generic.List[object]]::new()
 
-    Get-Content -LiteralPath $posFile |
-    ForEach-Object {
+    if ($DocumentType -eq "Assembly") {
 
-        $parts =
-        $_ -split '\|', 3
+        Write-Host ""
+        Write-Host "POS FILE:"
+        Write-Host $posFile
 
-        if ($parts.Count -ne 3) {
-            return
+        if (-not (
+                Test-Path `
+                    -LiteralPath $posFile `
+                    -PathType Leaf
+            )) {
+
+            throw `
+                "Posicionamento.txt nao encontrado: $posFile"
         }
 
-        $parentCode =
-        $parts[0].Trim()
+        Write-Section `
+            -Title "VIEW DETECTADA PELO NX"
 
-        $occurrenceCode =
-        $parts[1].Trim()
+        Get-Content `
+            -LiteralPath $posFile |
+        ForEach-Object {
 
-        $childCode =
-        $occurrenceCode
+            $parts =
+            $_ -split '\|', 3
 
-        if ($occurrenceCode -match '^(.+)_\d+$') {
+            if ($parts.Count -ne 3) {
+                return
+            }
+
+            $parentCode =
+            $parts[0].Trim()
+
+            $occurrenceCode =
+            $parts[1].Trim()
+
             $childCode =
-            $Matches[1]
+            $occurrenceCode
+
+            if ($occurrenceCode -match '^(.+)_\d+$') {
+                $childCode =
+                $Matches[1]
+            }
+
+            $transform =
+            $parts[2].Trim() -replace ',', '.'
+
+            if (-not [string]::IsNullOrWhiteSpace(
+                    $occurrenceCode
+                )) {
+
+                $estruturaView.Add(
+                    [PSCustomObject]@{
+                        Parent         = $parentCode
+                        Child          = $childCode
+                        OccurrenceCode = $occurrenceCode
+                        Transform      = $transform
+                    }
+                )
+            }
         }
 
-        $transform =
-        $parts[2].Trim() -replace ',', '.'
+        if ($estruturaView.Count -eq 0) {
 
-        if (-not [string]::IsNullOrWhiteSpace($occurrenceCode)) {
+            throw `
+                "Nenhuma ocorrencia valida foi encontrada em '$posFile'."
+        }
 
-            $estruturaView.Add(
-                [PSCustomObject]@{
-                    Parent         = $parentCode
-                    Child          = $childCode
-                    OccurrenceCode = $occurrenceCode
-                    Transform      = $transform
-                }
-            )
+        Write-Host ""
+        Write-Host "MONTAGEM:"
+        Write-Host "  $($estruturaView[0].Parent)"
+
+        Write-Host ""
+        Write-Host "VIEW ESPERADA:"
+        Write-Host ""
+
+        $estruturaView |
+        Select-Object -ExpandProperty Child |
+        Sort-Object -Unique |
+        ForEach-Object {
+            Write-Host "  $_"
         }
     }
+    else {
 
-    Write-Host ""
-    Write-Host "MONTAGEM:"
-    Write-Host "  $($estruturaView[0].Parent)"
+        Write-Section `
+            -Title "PECA INDIVIDUAL"
 
-    Write-Host ""
-    Write-Host "VIEW ESPERADA:"
-    Write-Host ""
+        Write-Success `
+            -Message "Peca individual confirmada pelo importador."
 
-    $estruturaView |
-    Select-Object -ExpandProperty Child |
-    Sort-Object -Unique |
-    ForEach-Object {
+        Write-Info `
+            -Message "Posicionamento.txt nao sera utilizado."
 
-        Write-Host "  $_"
+        Write-Info `
+            -Message "A criacao da BOM sera ignorada."
     }
-
-    Write-Host ""
-    Write-Host "ARQUIVOS NX ENCONTRADOS"
 
     foreach ($f in $nxPartFiles) {
         Write-Host $f.FullName
@@ -560,201 +595,214 @@ try {
             -Message "$($result.SourcePartCode) -> $($result.TeamcenterCode)"
     }
 
-    $parentSourceCode =
-    $estruturaView |
-    Select-Object -ExpandProperty Parent -First 1
+    if ($DocumentType -eq "Assembly") {
 
-    $parentResult =
-    $importResults |
-    Where-Object {
-        $_.SourcePartCode -eq $parentSourceCode
-    } |
-    Select-Object -First 1
+        $parentSourceCode =
+        $estruturaView |
+        Select-Object -ExpandProperty Parent -First 1
 
-    if ($null -eq $parentResult) {
-        throw "Item pai nao encontrado nos resultados: $parentSourceCode"
-    }
-    $parentItem =
-    Get-TeamcenterItem `
-        -ItemCode $parentResult.TeamcenterCode
+        $parentResult =
+        $importResults |
+        Where-Object {
+            $_.SourcePartCode -eq $parentSourceCode
+        } |
+        Select-Object -First 1
 
-    $parentRevision =
-    Get-TeamcenterRevision `
-        -Item $parentItem
-
-    $policyProps =
-    New-Object `
-        'System.Collections.Generic.List[string[]]'
-
-    $policyProps.Add(
-        [string[]]@(
-            "BOMLine",
-            "bl_child_lines"
-        )
-    )
-
-    [ImportarGD.Controller.Functions]::setObjectPolicy(
-        $policyProps
-    )
-
-    try {
-
-        foreach ($occurrence in $estruturaView) {
-
-            $resolvedChildCode =
-            $occurrence.Child
-
-            if ($nxNames.ContainsKey($occurrence.OccurrenceCode)) {
-                $resolvedChildCode =
-                $nxNames[$occurrence.OccurrenceCode]
-            }
-            elseif ($nxNames.ContainsKey($occurrence.Child)) {
-                $resolvedChildCode =
-                $nxNames[$occurrence.Child]
-            }
-
-            $childResult =
-            $importResults |
-            Where-Object {
-                $_.SourcePartCode -ieq $resolvedChildCode
-            } |
-            Select-Object -First 1
-
-            if ($null -eq $childResult) {
-
-                Write-Host `
-                    "  [WARNING] Filho nao importado: $($occurrence.Child)" `
-                    -ForegroundColor Yellow
-
-                continue
-            }
-
-            $childItem =
-            Get-TeamcenterItem `
-                -ItemCode $childResult.TeamcenterCode
-
-            $childRevision =
-            Get-TeamcenterRevision `
-                -Item $childItem
-
-            if ($null -eq $childRevision) {
-
-                Write-Host `
-                    "  [WARNING] Revisao nao encontrada: $($occurrence.Child)" `
-                    -ForegroundColor Yellow
-
-                continue
-            }
-
-            $singleChildList =
-            New-Object `
-                'System.Collections.Generic.List[Teamcenter.Soa.Client.Model.Strong.ItemRevision]'
-
-            $singleChildList.Add(
-                $childRevision
-            )
-
-            $attributes =
-            New-Object `
-                'System.Collections.Generic.List[System.Collections.Hashtable]'
-
-            $occurrenceAttributes =
-            New-Object System.Collections.Hashtable
-
-            $occurrenceAttributes.Add(
-                "bl_plmxml_occ_xform",
-                $occurrence.Transform
-            )
-
-            $attributes.Add(
-                $occurrenceAttributes
-            )
-
-            Write-Info `
-                -Message "Adicionando ocorrencia: $($occurrence.OccurrenceCode)"
-
-            Write-Info `
-                -Message "Transform: $($occurrence.Transform)"
-
-            $occurrenceParentResult =
-            $importResults |
-            Where-Object {
-                $_.SourcePartCode -ieq $occurrence.Parent
-            } |
-            Select-Object -First 1
-
-            if ($null -eq $occurrenceParentResult) {
-
-                Write-Host `
-                    "  [WARNING] Pai nao localizado: $($occurrence.Parent)" `
-                    -ForegroundColor Yellow
-
-                continue
-            }
-
-            $occurrenceParentItem =
-            Get-TeamcenterItem `
-                -ItemCode $occurrenceParentResult.TeamcenterCode
-
-            $occurrenceParentRevision =
-            Get-TeamcenterRevision `
-                -Item $occurrenceParentItem
-
-            if ($null -eq $occurrenceParentRevision) {
-
-                Write-Host `
-                    "  [WARNING] Revisao do pai nao localizada: $($occurrence.Parent)" `
-                    -ForegroundColor Yellow
-
-                continue
-            }
-
-            [ImportarGD.Controller.Functions]::addAllChildrenInBOM(
-                $occurrenceParentRevision,
-                $singleChildList,
-                $attributes
-            )
-
+        if ($null -eq $parentResult) {
+            throw "Item pai nao encontrado nos resultados: $parentSourceCode"
         }
 
+        # O restante da logica da BOM continua aqui sem alteracao
+        $parentItem =
+        Get-TeamcenterItem `
+            -ItemCode $parentResult.TeamcenterCode
+
+        $parentRevision =
+        Get-TeamcenterRevision `
+            -Item $parentItem
+
+        $policyProps =
+        New-Object `
+            'System.Collections.Generic.List[string[]]'
+
+        $policyProps.Add(
+            [string[]]@(
+                "BOMLine",
+                "bl_child_lines"
+            )
+        )
+
+        [ImportarGD.Controller.Functions]::setObjectPolicy(
+            $policyProps
+        )
+
+        try {
+
+            foreach ($occurrence in $estruturaView) {
+
+                $resolvedChildCode =
+                $occurrence.Child
+
+                if ($nxNames.ContainsKey($occurrence.OccurrenceCode)) {
+                    $resolvedChildCode =
+                    $nxNames[$occurrence.OccurrenceCode]
+                }
+                elseif ($nxNames.ContainsKey($occurrence.Child)) {
+                    $resolvedChildCode =
+                    $nxNames[$occurrence.Child]
+                }
+
+                $childResult =
+                $importResults |
+                Where-Object {
+                    $_.SourcePartCode -ieq $resolvedChildCode
+                } |
+                Select-Object -First 1
+
+                if ($null -eq $childResult) {
+
+                    Write-Host `
+                        "  [WARNING] Filho nao importado: $($occurrence.Child)" `
+                        -ForegroundColor Yellow
+
+                    continue
+                }
+
+                $childItem =
+                Get-TeamcenterItem `
+                    -ItemCode $childResult.TeamcenterCode
+
+                $childRevision =
+                Get-TeamcenterRevision `
+                    -Item $childItem
+
+                if ($null -eq $childRevision) {
+
+                    Write-Host `
+                        "  [WARNING] Revisao nao encontrada: $($occurrence.Child)" `
+                        -ForegroundColor Yellow
+
+                    continue
+                }
+
+                $singleChildList =
+                New-Object `
+                    'System.Collections.Generic.List[Teamcenter.Soa.Client.Model.Strong.ItemRevision]'
+
+                $singleChildList.Add(
+                    $childRevision
+                )
+
+                $attributes =
+                New-Object `
+                    'System.Collections.Generic.List[System.Collections.Hashtable]'
+
+                $occurrenceAttributes =
+                New-Object System.Collections.Hashtable
+
+                $occurrenceAttributes.Add(
+                    "bl_plmxml_occ_xform",
+                    $occurrence.Transform
+                )
+
+                $attributes.Add(
+                    $occurrenceAttributes
+                )
+
+                Write-Info `
+                    -Message "Adicionando ocorrencia: $($occurrence.OccurrenceCode)"
+
+                Write-Info `
+                    -Message "Transform: $($occurrence.Transform)"
+
+                $occurrenceParentResult =
+                $importResults |
+                Where-Object {
+                    $_.SourcePartCode -ieq $occurrence.Parent
+                } |
+                Select-Object -First 1
+
+                if ($null -eq $occurrenceParentResult) {
+
+                    Write-Host `
+                        "  [WARNING] Pai nao localizado: $($occurrence.Parent)" `
+                        -ForegroundColor Yellow
+
+                    continue
+                }
+
+                $occurrenceParentItem =
+                Get-TeamcenterItem `
+                    -ItemCode $occurrenceParentResult.TeamcenterCode
+
+                $occurrenceParentRevision =
+                Get-TeamcenterRevision `
+                    -Item $occurrenceParentItem
+
+                if ($null -eq $occurrenceParentRevision) {
+
+                    Write-Host `
+                        "  [WARNING] Revisao do pai nao localizada: $($occurrence.Parent)" `
+                        -ForegroundColor Yellow
+
+                    continue
+                }
+
+                [ImportarGD.Controller.Functions]::addAllChildrenInBOM(
+                    $occurrenceParentRevision,
+                    $singleChildList,
+                    $attributes
+                )
+
+            }
+
+            Write-Host ""
+            Write-Success `
+                -Message "BOM criada com posicionamento."
+        }
+        catch {
+
+            Write-Host ""
+
+            Write-Failure `
+                -Message "Erro ao criar BOM: $($_.Exception.Message)"
+
+            throw
+        }
+        finally {
+
+            Close-LeftoverBomWindow `
+                -Revision $parentRevision
+        }
+
+        }
+else {
+
+    Write-Host ""
+
+    Write-Info `
+        -Message "Criacao da BOM ignorada para peca individual."
+}
+
         Write-Host ""
+
         Write-Success `
-            -Message "BOM criada com posicionamento."
+            -Message "Teamcenter import completed."
+
+        Write-Info `
+            -Message "Imported files: $($importResults.Count)"
+
+        exit 0
     }
     catch {
 
+        Write-Failure `
+            -Message $_.Exception.Message
+
+        Write-Host ""
+        Write-Host "[FULL ERROR]" -ForegroundColor DarkGray
+        Write-Host $_.Exception.ToString() -ForegroundColor DarkGray
         Write-Host ""
 
-        Write-Failure `
-            -Message "Erro ao criar BOM: $($_.Exception.Message)"
-
-        throw
+        exit 1
     }
-    finally {
-
-        Close-LeftoverBomWindow `
-            -Revision $parentRevision
-    }
-
-    Write-Host ""
-
-    Write-Success `
-        -Message "Teamcenter import completed."
-
-    Write-Info `
-        -Message "Imported files: $($importResults.Count)"
-
-    exit 0
-}
-catch {
-
-    Write-Failure `
-        -Message $_.Exception.Message
-
-    Write-Host ""
-    Write-Host "[FULL ERROR]" -ForegroundColor DarkGray
-    Write-Host $_.Exception.ToString() -ForegroundColor DarkGray
-    Write-Host ""
-
-    exit 1
-}
