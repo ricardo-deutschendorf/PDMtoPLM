@@ -1,23 +1,104 @@
+# === Teamcenter integration helper functions ===
+
+# Section: Establish the Teamcenter connection
 # ============================================================
-# TEAMCENTER INTEGRATION FUNCTIONS
-# Provides connection, item creation, revision retrieval
-# and dataset import functions.
+# TEAMCENTER IMPORTER AVAILABILITY
+# Verifica se o Importar GD ja esta instalado localmente.
+# Caso nao esteja, executa o instalador existente.
 # ============================================================
 
-
-# ============================================================
-# TEAMCENTER CONNECTION
-# ============================================================
-
-function Connect-Teamcenter {
+function Confirm-TeamcenterImporter {
 
     $importerExecutablePath =
     "C:\Temp\ImportarGD\Importar GD.exe"
 
-    $teamcenterServerUrl =
-    "http://perto37-novo.perto.com.br:8080/tc"
+    if (
+        Test-Path `
+            -LiteralPath $importerExecutablePath `
+            -PathType Leaf
+    ) {
 
-    Write-Host "TC 1 - Loading importer assembly"
+        Write-Host `
+            "  [OK] Importar GD ja esta instalado." `
+            -ForegroundColor Green
+
+        Write-Host `
+            "  -> $importerExecutablePath" `
+            -ForegroundColor Gray
+
+        return $importerExecutablePath
+    }
+
+    Write-Host `
+        "  [WARNING] Importar GD nao foi encontrado localmente." `
+        -ForegroundColor Yellow
+
+    Write-Host `
+        "  -> Iniciando instalacao automatica..." `
+        -ForegroundColor Gray
+
+    $projectRoot =
+    Split-Path `
+        -Parent $PSScriptRoot
+
+    $installerScript =
+    Join-Path `
+        $projectRoot `
+        "import_PLM.ps1"
+
+    if (-not (
+            Test-Path `
+                -LiteralPath $installerScript `
+                -PathType Leaf
+        )) {
+
+        throw `
+            "Instalador do Importar GD nao encontrado: $installerScript"
+    }
+
+    $powerShell64Path =
+    Join-Path `
+        $env:WINDIR `
+        "Sysnative\WindowsPowerShell\v1.0\powershell.exe"
+
+    if (-not (
+            Test-Path `
+                -LiteralPath $powerShell64Path `
+                -PathType Leaf
+        )) {
+
+        $powerShell64Path =
+        Join-Path `
+            $env:WINDIR `
+            "System32\WindowsPowerShell\v1.0\powershell.exe"
+    }
+
+    if (-not (
+            Test-Path `
+                -LiteralPath $powerShell64Path `
+                -PathType Leaf
+        )) {
+
+        throw `
+            "Windows PowerShell 64-bit nao foi encontrado."
+    }
+
+    & $powerShell64Path `
+        -NoProfile `
+        -ExecutionPolicy Bypass `
+        -File $installerScript |
+    Out-Host
+    
+    $installerExitCode =
+    $LASTEXITCODE
+
+    if ($installerExitCode -ne 0) {
+
+        throw (
+            "A instalacao automatica do Importar GD falhou. " +
+            "Codigo de saida: $installerExitCode"
+        )
+    }
 
     if (-not (
             Test-Path `
@@ -25,8 +106,35 @@ function Connect-Teamcenter {
                 -PathType Leaf
         )) {
 
-        throw `
-            "Teamcenter importer executable not found at '$importerExecutablePath'."
+        throw (
+            "O instalador terminou sem erro, mas o executavel " +
+            "nao foi encontrado em '$importerExecutablePath'."
+        )
+    }
+
+    Write-Host `
+        "  [OK] Importar GD instalado automaticamente." `
+        -ForegroundColor Green
+
+    Write-Host `
+        "  -> $importerExecutablePath" `
+        -ForegroundColor Gray
+
+    return $importerExecutablePath
+}
+function Connect-Teamcenter {
+
+    $importerExecutablePath =
+    Confirm-TeamcenterImporter
+
+    $teamcenterServerUrl =
+    "http://perto37-novo.perto.com.br:8080/tc"
+
+    if (-not (
+            Test-Path  -LiteralPath $importerExecutablePath  -PathType Leaf
+        )) {
+
+        throw  "Teamcenter importer executable not found at '$importerExecutablePath'."
     }
 
     $script:ImporterAssembly =
@@ -36,11 +144,8 @@ function Connect-Teamcenter {
 
     if ($null -eq $script:ImporterAssembly) {
 
-        throw `
-            "Teamcenter importer assembly could not be loaded."
+        throw  "Teamcenter importer assembly could not be loaded."
     }
-
-    Write-Host "TC 2 - Locating Teamcenter session type"
 
     $sessionType =
     $script:ImporterAssembly.GetType(
@@ -49,11 +154,8 @@ function Connect-Teamcenter {
 
     if ($null -eq $sessionType) {
 
-        throw `
-            "Teamcenter.ClientX.Session type was not found."
+        throw  "Teamcenter.ClientX.Session type was not found."
     }
-
-    Write-Host "TC 3 - Creating Teamcenter session"
 
     $script:TeamcenterSession =
     [System.Activator]::CreateInstance(
@@ -65,11 +167,8 @@ function Connect-Teamcenter {
 
     if ($null -eq $script:TeamcenterSession) {
 
-        throw `
-            "Teamcenter session returned NULL."
+        throw  "Teamcenter session returned NULL."
     }
-
-    Write-Host "TC 4 - Authenticating"
 
     $authenticatedUser =
     $script:TeamcenterSession.login(
@@ -82,81 +181,24 @@ function Connect-Teamcenter {
 
     if ($null -eq $authenticatedUser) {
 
-        throw `
-            "Teamcenter login returned NULL."
+        throw  "Teamcenter login returned NULL."
     }
-
-    Write-Host "TC 5 - Locating importer functions"
 
     $script:TeamcenterFunctions =
     $script:ImporterAssembly.GetType(
         "ImportarGD.Controller.Functions"
     )
 
-    $methodNames = @(
-        "NewBomviewRevision",
-        "openBOMWindow",
-        "Load_Bom_Lines",
-        "addAllChildrenInBOM",
-        "updateBomLine",
-        "saveBOMWindow",
-        "closeBOMWindow"
-    )
-
-    foreach ($methodName in $methodNames) {
-        Write-Host ""
-        Write-Host "===================================="
-        Write-Host $methodName
-        Write-Host "===================================="
-
-        $methods =
-        $script:TeamcenterFunctions.GetMethods() |
-        Where-Object {
-            $_.Name -eq $methodName
-        }
-
-        foreach ($method in $methods) {
-            Write-Host ""
-            Write-Host "Overload:"
-
-            Write-Host "RETORNO:"
-            Write-Host $method.ReturnType.FullName
-
-            Write-Host ""
-            Write-Host "PARAMETROS:"
-
-            foreach ($param in $method.GetParameters()) {
-                Write-Host (
-                    $param.ParameterType.FullName +
-                    " " +
-                    $param.Name
-                )
-            }
-        }
-    }
-    
-    $script:TeamcenterFunctions.GetMethods() |
-    Sort-Object Name |
-    Select-Object Name -Unique |
-    ForEach-Object {
-        Write-Host $_.Name
-    }
-
     if ($null -eq $script:TeamcenterFunctions) {
 
-        throw `
-            "ImportarGD.Controller.Functions type was not found."
+        throw  "ImportarGD.Controller.Functions type was not found."
     }
-
-    Write-Host "TC 6 - Teamcenter connection established"
 
     return $script:TeamcenterSession
 }
 
-# ============================================================
-# TEAMCENTER METHOD LOOKUP
-# ============================================================
 
+# Section: Resolve a Teamcenter API method
 function Get-TeamcenterMethod {
 
     param(
@@ -169,8 +211,7 @@ function Get-TeamcenterMethod {
 
     if ($null -eq $script:TeamcenterFunctions) {
 
-        throw `
-            "Teamcenter functions are not loaded. Run Connect-Teamcenter first."
+        throw  "Teamcenter functions are not loaded. Run Connect-Teamcenter first."
     }
 
     $method =
@@ -183,18 +224,15 @@ function Get-TeamcenterMethod {
 
     if ($null -eq $method) {
 
-        throw `
-            "Teamcenter method '$MethodName' with $ParameterCount parameter(s) was not found."
+        throw  "Teamcenter method '$MethodName' with $ParameterCount parameter(s) was not found."
     }
 
     return $method
 }
 
 
-# ============================================================
-# ITEM REVISION
-# ============================================================
 
+# Section: Retrieve a Teamcenter revision
 function Get-TeamcenterRevision {
 
     param(
@@ -204,14 +242,11 @@ function Get-TeamcenterRevision {
 
     if ($null -eq $Item) {
 
-        throw `
-            "Teamcenter item was not provided."
+        throw  "Teamcenter item was not provided."
     }
 
     $getRevisionMethod =
-    Get-TeamcenterMethod `
-        -MethodName "getItemRevisionfromItem" `
-        -ParameterCount 1
+    Get-TeamcenterMethod  -MethodName "getItemRevisionfromItem"  -ParameterCount 1
 
     $revision =
     $getRevisionMethod.Invoke(
@@ -225,10 +260,8 @@ function Get-TeamcenterRevision {
 }
 
 
-# ============================================================
-# TEAMCENTER ITEM LOOKUP
-# ============================================================
 
+# Section: Retrieve a Teamcenter item
 function Get-TeamcenterItem {
 
     param(
@@ -239,9 +272,7 @@ function Get-TeamcenterItem {
     )
 
     $getItemMethod =
-    Get-TeamcenterMethod `
-        -MethodName "getItem" `
-        -ParameterCount 2
+    Get-TeamcenterMethod  -MethodName "getItem"  -ParameterCount 2
 
     $item =
     $getItemMethod.Invoke(
@@ -256,10 +287,8 @@ function Get-TeamcenterItem {
 }
 
 
-# ============================================================
-# NEXT AVAILABLE ITEM
-# ============================================================
 
+# Section: Create the next Teamcenter item
 function New-NextTeamcenterItem {
 
     param(
@@ -287,14 +316,10 @@ function New-NextTeamcenterItem {
     }
 
     $getItemMethod =
-    Get-TeamcenterMethod `
-        -MethodName "getItem" `
-        -ParameterCount 2
+    Get-TeamcenterMethod  -MethodName "getItem"  -ParameterCount 2
 
     $createItemMethod =
-    Get-TeamcenterMethod `
-        -MethodName "criarItem" `
-        -ParameterCount 3
+    Get-TeamcenterMethod  -MethodName "criarItem"  -ParameterCount 3
 
     for (
         $attempt = 0
@@ -326,16 +351,12 @@ function New-NextTeamcenterItem {
 
         if ($null -ne $existingItem) {
 
-            Write-Host `
-                "[WARNING] Item already exists: $candidateCode" `
-                -ForegroundColor Yellow
+            Write-Host  "[WARNING] Item already exists: $candidateCode"  -ForegroundColor Yellow
 
             continue
         }
 
-        Write-Host `
-            "[INFO] Creating item: $candidateCode" `
-            -ForegroundColor Gray
+        Write-Host  "[INFO] Creating item: $candidateCode"  -ForegroundColor Gray
 
         $createdItem =
         $createItemMethod.Invoke(
@@ -352,9 +373,7 @@ function New-NextTeamcenterItem {
             continue
         }
 
-        Write-Host `
-            "[OK] Item created: $candidateCode" `
-            -ForegroundColor Green
+        Write-Host  "[OK] Item created: $candidateCode"  -ForegroundColor Green
 
         return [PSCustomObject]@{
             Code = $candidateCode
@@ -362,14 +381,11 @@ function New-NextTeamcenterItem {
         }
     }
 
-    throw `
-        "Could not create a Teamcenter item after $MaximumAttempts attempts."
+    throw  "Could not create a Teamcenter item after $MaximumAttempts attempts."
 }
 
-# ============================================================
-# GENERIC DATASET IMPORT
-# ============================================================
 
+# Section: Import a dataset into Teamcenter
 function Import-TeamcenterDataset {
 
     param(
@@ -395,24 +411,18 @@ function Import-TeamcenterDataset {
 
     if ($null -eq $Revision) {
 
-        throw `
-            "Teamcenter revision was not provided for '$ItemCode'."
+        throw  "Teamcenter revision was not provided for '$ItemCode'."
     }
 
     if (-not (
-            Test-Path `
-                -LiteralPath $FilePath `
-                -PathType Leaf
+            Test-Path  -LiteralPath $FilePath  -PathType Leaf
         )) {
 
-        throw `
-            "Import file not found at '$FilePath'."
+        throw  "Import file not found at '$FilePath'."
     }
 
     $importMethod =
-    Get-TeamcenterMethod `
-        -MethodName $ImporterMethod `
-        -ParameterCount 5
+    Get-TeamcenterMethod  -MethodName $ImporterMethod  -ParameterCount 5
 
     $importResult =
     $importMethod.Invoke(
@@ -430,10 +440,8 @@ function Import-TeamcenterDataset {
 }
 
 
-# ============================================================
-# PRT IMPORT
-# ============================================================
 
+# Section: Import a PRT file
 function Import-TeamcenterPrt {
 
     param(
@@ -447,18 +455,12 @@ function Import-TeamcenterPrt {
         [string]$FilePath
     )
 
-    return Import-TeamcenterDataset `
-        -Revision $Revision `
-        -ItemCode $ItemCode `
-        -FilePath $FilePath `
-        -ImporterMethod "ImportarPrt"
+    return Import-TeamcenterDataset  -Revision $Revision  -ItemCode $ItemCode  -FilePath $FilePath  -ImporterMethod "ImportarPrt"
 }
 
 
-# ============================================================
-# JT IMPORT
-# ============================================================
 
+# Section: Import a JT file
 function Import-TeamcenterJt {
 
     param(
@@ -472,17 +474,11 @@ function Import-TeamcenterJt {
         [string]$FilePath
     )
 
-    return Import-TeamcenterDataset `
-        -Revision $Revision `
-        -ItemCode $ItemCode `
-        -FilePath $FilePath `
-        -ImporterMethod "ImportarJT"
+    return Import-TeamcenterDataset  -Revision $Revision  -ItemCode $ItemCode  -FilePath $FilePath  -ImporterMethod "ImportarJT"
 }
 
-# ============================================================
-# DWG IMPORT
-# ============================================================
 
+# Section: Import a DWG file
 function Import-TeamcenterDwg {
 
     param(
@@ -496,19 +492,10 @@ function Import-TeamcenterDwg {
         [string]$FilePath
     )
 
-    return Import-TeamcenterDataset `
-        -Revision $Revision `
-        -ItemCode $ItemCode `
-        -FilePath $FilePath `
-        -ImporterMethod "ImportarDWG"
+    return Import-TeamcenterDataset  -Revision $Revision  -ItemCode $ItemCode  -FilePath $FilePath  -ImporterMethod "ImportarDWG"
 }
-# ============================================================
-# BOM WINDOW SAFETY NET
-# Garante que nenhuma BOM window fica presa no servidor,
-# mesmo se addAllChildrenInBOM falhar internamente (a DLL
-# engole exceções de save/close e não avisa o chamador).
-# ============================================================
 
+# Section: Close any leftover BOM window
 function Close-LeftoverBomWindow {
 
     param(
@@ -517,14 +504,10 @@ function Close-LeftoverBomWindow {
     )
 
     $openBomMethod =
-    Get-TeamcenterMethod `
-        -MethodName "openBOMWindow" `
-        -ParameterCount 1
+    Get-TeamcenterMethod  -MethodName "openBOMWindow"  -ParameterCount 1
 
     $closeBomMethod =
-    Get-TeamcenterMethod `
-        -MethodName "closeBOMWindow" `
-        -ParameterCount 1
+    Get-TeamcenterMethod  -MethodName "closeBOMWindow"  -ParameterCount 1
 
     try {
 
@@ -545,24 +528,17 @@ function Close-LeftoverBomWindow {
                 )
             )
 
-            Write-Host `
-                "  [OK] BOM window fechada (safety net)." `
-                -ForegroundColor Green
+            Write-Host  "  [OK] BOM window fechada (safety net)."  -ForegroundColor Green
         }
     }
     catch {
 
-        Write-Host `
-            "  [AVISO] Falha ao confirmar fechamento de BOM window: $($_.Exception.Message)" `
-            -ForegroundColor Yellow
+        Write-Host  "  [AVISO] Falha ao confirmar fechamento de BOM window: $($_.Exception.Message)"  -ForegroundColor Yellow
     }
 }
 
-# ============================================================
-# SUBSTITUI addAllChildrenInBOM (bug: nao forca carregamento
-# de bl_child_lines antes de le-lo, e trava com excecao)
-# ============================================================
 
+# Section: Add BOM children safely
 function Add-TeamcenterBomChildrenSafe {
 
     param(
@@ -602,7 +578,6 @@ function Add-TeamcenterBomChildrenSafe {
 
         $newBomline = $response.ItemLines[0].Bomline
 
-        # FORCA o carregamento de bl_child_lines ANTES de ler (fix do bug)
         $dmService.GetProperties(@($newBomline), @("bl_child_lines")) | Out-Null
 
         if ($newBomline.Bl_child_lines.Length -ne 0) {

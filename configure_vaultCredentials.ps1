@@ -1,6 +1,4 @@
-# ============================================================
-# VAULT CREDENTIAL CONFIGURATION AND VALIDATION
-# ============================================================
+# === Vault credential configuration ===
 
 $ErrorActionPreference = "Stop"
 
@@ -11,15 +9,9 @@ $vaultName =
 "Perto"
 
 $credentialFilePath =
-Join-Path `
-    $PSScriptRoot `
-    "vault_credentials.xml"
+Join-Path  $PSScriptRoot  "vault_credentials.xml"
 
-
-# ============================================================
-# CONSOLE OUTPUT
-# ============================================================
-
+# Section: Print a console section heading
 function Write-Section {
 
     param(
@@ -33,7 +25,7 @@ function Write-Section {
     Write-Host ("=" * 60) -ForegroundColor White
 }
 
-
+# Section: Print a success message
 function Write-Success {
 
     param(
@@ -44,7 +36,7 @@ function Write-Success {
     Write-Host "  [OK] $Message" -ForegroundColor Green
 }
 
-
+# Section: Print a failure message
 function Write-Failure {
 
     param(
@@ -55,7 +47,6 @@ function Write-Failure {
     Write-Host "  [ERROR] $Message" -ForegroundColor Red
 }
 
-
 function Write-Information {
 
     param(
@@ -65,12 +56,7 @@ function Write-Information {
 
     Write-Host "  -> $Message" -ForegroundColor Gray
 }
-
-
-# ============================================================
-# VAULT AUTHENTICATION VALIDATION
-# ============================================================
-
+# Section: Validate vault credentials
 function Test-VaultCredential {
 
     param(
@@ -114,8 +100,7 @@ function Test-VaultCredential {
     }
     catch {
 
-        Write-Failure `
-            -Message $_.Exception.Message
+        Write-Failure  -Message $_.Exception.Message
 
         return $false
     }
@@ -135,36 +120,24 @@ function Test-VaultCredential {
             )
         }
 
-        Remove-Variable `
-            plainTextPassword `
-            -ErrorAction SilentlyContinue
+        Remove-Variable  plainTextPassword  -ErrorAction SilentlyContinue
     }
 }
 
-
-# ============================================================
-# MAIN EXECUTION
-# ============================================================
-
 try {
 
-    Write-Section `
-        -Title "VAULT CREDENTIAL CONFIGURATION"
+    Write-Section  -Title "VAULT CREDENTIAL CONFIGURATION"
 
     if (-not (
-            Test-Path `
-                -LiteralPath $pdmLibraryPath
+            Test-Path  -LiteralPath $pdmLibraryPath
         )) {
 
-        throw `
-            "PDM library not found at '$pdmLibraryPath'."
+        throw  "PDM library not found at '$pdmLibraryPath'."
     }
 
-    Add-Type `
-        -Path $pdmLibraryPath
+    Add-Type  -Path $pdmLibraryPath
 
-    Write-Success `
-        -Message "PDM library loaded."
+    Write-Success  -Message "PDM library loaded."
 
     while ($true) {
 
@@ -178,81 +151,64 @@ try {
         if ($username.Length -eq 0)
         {
 
-            Write-Failure `
-                -Message "Username cannot be empty."
+            Write-Failure  -Message "Username cannot be empty."
 
             continue
         }
 
         $password =
-        Read-Host `
-            "Vault password" `
-            -AsSecureString
+        Read-Host  "Vault password"  -AsSecureString
 
         if ($password.Length -eq 0) {
 
-            Write-Failure `
-                -Message "Password cannot be empty."
+            Write-Failure  -Message "Password cannot be empty."
 
             continue
         }
 
         Write-Host ""
 
-        Write-Information `
-            -Message "Validating access to vault '$vaultName'..."
+        Write-Information  -Message "Validating access to vault '$vaultName'..."
 
         $isCredentialValid =
-        Test-VaultCredential `
-            -Username $username `
-            -Password $password
+        Test-VaultCredential  -Username $username  -Password $password
 
         if (-not $isCredentialValid) {
 
             Write-Host ""
 
-            Write-Failure `
-                -Message "Invalid username or password."
+            Write-Failure  -Message "Invalid username or password."
 
-            Write-Information `
-                -Message "The credential was not saved."
+            Write-Information  -Message "The credential was not saved."
 
             continue
         }
 
-        Write-Success `
-            -Message "Vault access validated."
+        Write-Success  -Message "Vault access validated."
 
         $credentialData =
         [PSCustomObject]@{
             Usuario = $username
 
             SenhaCriptografada =
-            ConvertFrom-SecureString `
-                -SecureString $password
+            ConvertFrom-SecureString  -SecureString $password
         }
 
         $credentialData |
-        Export-Clixml `
-            -LiteralPath $credentialFilePath `
-            -Force
+        Export-Clixml  -LiteralPath $credentialFilePath  -Force
 
         if (-not (
-                Test-Path `
-                    -LiteralPath $credentialFilePath
+                Test-Path  -LiteralPath $credentialFilePath
             )) {
 
-            throw `
-                "The credential file could not be created."
+            throw  "The credential file could not be created."
         }
 
         Write-Host ""
 
-        Write-Success `
-            -Message "Credential saved successfully."
+        Write-Success  -Message "Credential saved successfully."
 
-        Write-Information `
-            -Message "File: $credentialFilePath"
+        Write-Information  -Message "File: $credentialFilePath"
 
         break
     }
@@ -278,11 +234,7 @@ catch {
 }
 finally {
 
-    Remove-Variable `
-        password `
-        -ErrorAction SilentlyContinue
+    Remove-Variable  password  -ErrorAction SilentlyContinue
 
-    Remove-Variable `
-        plainTextPassword `
-        -ErrorAction SilentlyContinue
+    Remove-Variable  plainTextPassword  -ErrorAction SilentlyContinue
 }

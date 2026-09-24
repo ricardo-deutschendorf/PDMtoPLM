@@ -1,14 +1,9 @@
-# ============================================================
-# TEAMCENTER IMPORTER INSTALLATION
-# Maps the network directory and installs Importar GD locally.
-# ============================================================
+# === PLM importer deployment workflow ===
+
 
 $ErrorActionPreference = "Stop"
 
 
-# ============================================================
-# CONFIGURATION
-# ============================================================
 
 $networkDriveName =
     "Q"
@@ -24,20 +19,15 @@ $temporaryDirectory =
 
 $destinationPath =
     "C:\Temp\ImportarGD"
-
 $executableName =
     "Importar GD.exe"
 
 $executablePath =
-    Join-Path `
-        $destinationPath `
-        $executableName
+    Join-Path  $destinationPath  $executableName
 
 
-# ============================================================
-# CONSOLE OUTPUT
-# ============================================================
 
+# Section: Print a console section heading
 function Write-Section {
 
     param(
@@ -52,6 +42,7 @@ function Write-Section {
 }
 
 
+# Section: Print a success message
 function Write-Success {
 
     param(
@@ -63,6 +54,7 @@ function Write-Success {
 }
 
 
+# Section: Print a failure message
 function Write-Failure {
 
     param(
@@ -74,6 +66,7 @@ function Write-Failure {
 }
 
 
+# Section: Print a warning message
 function Write-WarningMessage {
 
     param(
@@ -85,6 +78,7 @@ function Write-WarningMessage {
 }
 
 
+# Section: Print an informational message
 function Write-Info {
 
     param(
@@ -96,19 +90,14 @@ function Write-Info {
 }
 
 
-# ============================================================
-# NETWORK DRIVE
-# ============================================================
 
+# Section: Connect the network drive
 function Connect-NetworkDrive {
 
-    Write-Section `
-        -Title "NETWORK DRIVE"
+    Write-Section  -Title "NETWORK DRIVE"
 
     $existingDrive =
-        Get-PSDrive `
-            -Name $networkDriveName `
-            -ErrorAction SilentlyContinue
+        Get-PSDrive  -Name $networkDriveName  -ErrorAction SilentlyContinue
 
     if ($null -ne $existingDrive) {
 
@@ -117,155 +106,119 @@ function Connect-NetworkDrive {
             "$networkDrivePath\"
         ) {
 
-            Write-Success `
-                -Message "Network drive $networkDriveName`: is already mapped."
+            Write-Success  -Message "Network drive $networkDriveName`: is already mapped."
 
-            Write-Info `
-                -Message "Path: $($existingDrive.Root)"
+            Write-Info  -Message "Path: $($existingDrive.Root)"
 
             return
         }
 
-        Write-WarningMessage `
-            -Message "Drive $networkDriveName`: is mapped to another directory."
+        Write-WarningMessage  -Message "Drive $networkDriveName`: is mapped to another directory."
 
-        Write-Info `
-            -Message "Current path: $($existingDrive.Root)"
+        Write-Info  -Message "Current path: $($existingDrive.Root)"
 
-        Write-Info `
-            -Message "Expected path: $networkDrivePath"
+        Write-Info  -Message "Expected path: $networkDrivePath"
 
-        Write-WarningMessage `
-            -Message "Removing the existing mapping."
+        Write-WarningMessage  -Message "Removing the existing mapping."
 
         & net.exe use "$networkDriveName`:" /delete /yes |
             Out-Null
 
         if ($LASTEXITCODE -ne 0) {
 
-            throw `
-                "Could not remove the existing network drive mapping."
+            throw  "Could not remove the existing network drive mapping."
         }
     }
 
-    Write-Info `
-        -Message "Mapping network drive $networkDriveName`:..."
+    Write-Info  -Message "Mapping network drive $networkDriveName`:..."
 
     & net.exe use "$networkDriveName`:" $networkDrivePath |
         Out-Null
 
     if ($LASTEXITCODE -ne 0) {
 
-        throw `
-            "Could not map '$networkDrivePath' to drive $networkDriveName`:."
+        throw  "Could not map '$networkDrivePath' to drive $networkDriveName`:."
     }
 
     if (-not (
         Test-Path -LiteralPath "$networkDriveName`:\"
     )) {
 
-        throw `
-            "Network drive $networkDriveName`: was mapped but is not accessible."
+        throw  "Network drive $networkDriveName`: was mapped but is not accessible."
     }
 
-    Write-Success `
-        -Message "Network drive mapped successfully."
+    Write-Success  -Message "Network drive mapped successfully."
 
-    Write-Info `
-        -Message "Path: $networkDriveName`:\"
+    Write-Info  -Message "Path: $networkDriveName`:\"
 }
 
 
-# ============================================================
-# SOURCE VALIDATION
-# ============================================================
 
+# Section: Validate the importer source
 function Test-ImporterSource {
 
-    Write-Section `
-        -Title "VALIDATING IMPORTER SOURCE"
+    Write-Section  -Title "VALIDATING IMPORTER SOURCE"
 
-    Write-Info `
-        -Message "Source: $sourcePath"
+    Write-Info  -Message "Source: $sourcePath"
 
-    Write-Info `
-        -Message "Destination: $destinationPath"
+    Write-Info  -Message "Destination: $destinationPath"
 
     if (-not (
         Test-Path -LiteralPath $sourcePath
     )) {
 
-        throw `
-            "Importer source was not found at '$sourcePath'."
+        throw  "Importer source was not found at '$sourcePath'."
     }
 
     $sourceExecutablePath =
-        Join-Path `
-            $sourcePath `
-            $executableName
+        Join-Path  $sourcePath  $executableName
 
     if (-not (
         Test-Path -LiteralPath $sourceExecutablePath
     )) {
 
-        throw `
-            "$executableName was not found at '$sourcePath'."
+        throw  "$executableName was not found at '$sourcePath'."
     }
 
-    Write-Success `
-        -Message "Importer source validated."
+    Write-Success  -Message "Importer source validated."
 }
 
 
-# ============================================================
-# DESTINATION DIRECTORY
-# ============================================================
 
+# Section: Initialize the destination directory
 function Initialize-DestinationDirectory {
 
     if (-not (
         Test-Path -LiteralPath $temporaryDirectory
     )) {
 
-        New-Item `
-            -ItemType Directory `
-            -Path $temporaryDirectory `
-            -Force |
+        New-Item  -ItemType Directory  -Path $temporaryDirectory  -Force |
         Out-Null
 
-        Write-Info `
-            -Message "Directory created: $temporaryDirectory"
+        Write-Info  -Message "Directory created: $temporaryDirectory"
     }
 
     if (-not (
         Test-Path -LiteralPath $destinationPath
     )) {
 
-        New-Item `
-            -ItemType Directory `
-            -Path $destinationPath `
-            -Force |
+        New-Item  -ItemType Directory  -Path $destinationPath  -Force |
         Out-Null
 
-        Write-Info `
-            -Message "Directory created: $destinationPath"
+        Write-Info  -Message "Directory created: $destinationPath"
     }
 }
 
 
-# ============================================================
-# IMPORTER FILE SYNCHRONIZATION
-# ============================================================
 
+# Section: Synchronize importer files
 function Sync-TeamcenterImporter {
 
-    Write-Section `
-        -Title "INSTALLING TEAMCENTER IMPORTER"
+    Write-Section  -Title "INSTALLING TEAMCENTER IMPORTER"
 
     Initialize-DestinationDirectory
 
-    Write-Info `
-        -Message "Synchronizing importer files..."
+    Write-Info  -Message "Synchronizing importer files..."
 
     $robocopyArguments = @(
         $sourcePath
@@ -291,104 +244,76 @@ function Sync-TeamcenterImporter {
 
     if ($robocopyExitCode -ge 8) {
 
-        throw `
-            "Importer synchronization failed with Robocopy code $robocopyExitCode."
+        throw  "Importer synchronization failed with Robocopy code $robocopyExitCode."
     }
 
     if ($robocopyExitCode -eq 0) {
 
-        Write-Success `
-            -Message "Importer files are already up to date."
+        Write-Success  -Message "Importer files are already up to date."
     }
     else {
 
-        Write-Success `
-            -Message "Importer files synchronized successfully."
+        Write-Success  -Message "Importer files synchronized successfully."
     }
 
     if (-not (
         Test-Path -LiteralPath $executablePath
     )) {
 
-        throw `
-            "$executableName was not found after synchronization."
+        throw  "$executableName was not found after synchronization."
     }
 }
 
 
-# ============================================================
-# FILE UNBLOCKING
-# ============================================================
 
+# Section: Unblock importer files
 function Unblock-ImporterFiles {
 
-    Write-Section `
-        -Title "UNBLOCKING IMPORTER FILES"
+    Write-Section  -Title "UNBLOCKING IMPORTER FILES"
 
     $files =
         @(
-            Get-ChildItem `
-                -LiteralPath $destinationPath `
-                -File `
-                -Recurse `
-                -ErrorAction Stop
+            Get-ChildItem  -LiteralPath $destinationPath  -File  -Recurse  -ErrorAction Stop
         )
 
     if ($files.Count -eq 0) {
 
-        throw `
-            "No importer files were found at '$destinationPath'."
+        throw  "No importer files were found at '$destinationPath'."
     }
 
     foreach ($file in $files) {
 
-        Unblock-File `
-            -LiteralPath $file.FullName `
-            -ErrorAction Stop
+        Unblock-File  -LiteralPath $file.FullName  -ErrorAction Stop
     }
 
-    Write-Success `
-        -Message "Importer files unblocked."
+    Write-Success  -Message "Importer files unblocked."
 
-    Write-Info `
-        -Message "Files processed: $($files.Count)"
+    Write-Info  -Message "Files processed: $($files.Count)"
 }
 
 
-# ============================================================
-# INSTALLATION RESULT
-# ============================================================
 
+# Section: Show installation results
 function Show-InstallationResult {
 
-    Write-Section `
-        -Title "INSTALLATION RESULT"
+    Write-Section  -Title "INSTALLATION RESULT"
 
     $installedFiles =
         @(
-            Get-ChildItem `
-                -LiteralPath $destinationPath `
-                -File `
-                -Recurse `
-                -ErrorAction Stop
+            Get-ChildItem  -LiteralPath $destinationPath  -File  -Recurse  -ErrorAction Stop
         )
 
     foreach ($installedFile in $installedFiles) {
 
-        Write-Success `
-            -Message $installedFile.Name
+        Write-Success  -Message $installedFile.Name
     }
 
     Write-Host ""
 
-    Write-Info `
-        -Message "Executable: $executablePath"
+    Write-Info  -Message "Executable: $executablePath"
 }
 
 
-# ============================================================
-# MAIN EXECUTION
-# ============================================================
 
 try {
 
@@ -402,14 +327,11 @@ try {
 
     Show-InstallationResult
 
-    Write-Section `
-        -Title "INSTALLATION COMPLETED"
+    Write-Section  -Title "INSTALLATION COMPLETED"
 
-    Write-Success `
-        -Message "Teamcenter importer is ready to use."
+    Write-Success  -Message "Teamcenter importer is ready to use."
 
-    Write-Info `
-        -Message "Location: $destinationPath"
+    Write-Info  -Message "Location: $destinationPath"
 
     exit 0
 }
@@ -417,8 +339,7 @@ catch {
 
     Write-Host ""
 
-    Write-Failure `
-        -Message $_.Exception.Message
+    Write-Failure  -Message $_.Exception.Message
 
     Write-Host ""
     Write-Host "[FULL ERROR]" -ForegroundColor DarkGray

@@ -1,3 +1,5 @@
+# === NX to Teamcenter import workflow ===
+
 param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
@@ -8,19 +10,29 @@ param(
         "Part",
         "Assembly"
     )]
-    [string]$DocumentType
+    [string]$DocumentType,
+
+    [Parameter(Mandatory = $true)]
+    [ValidateSet(
+        "Create",
+        "Existing"
+    )]
+    [string]$ItemTargetMode,
+
+    [string]$ExistingItemCode
 )
-# ============================================================
-# TEAMCENTER IMPORT
-# Imports generated NX PRT files into Teamcenter.
-# ============================================================
+
+if (
+    $DocumentType -eq "Part" -and
+    $ItemTargetMode -eq "Existing" -and
+    [string]::IsNullOrWhiteSpace($ExistingItemCode)
+) {
+
+    throw `
+        "O codigo do item existente nao foi informado."
+}
 
 $ErrorActionPreference = "Stop"
-
-
-# ============================================================
-# CONFIGURATION
-# ============================================================
 
 $companyCode =
 "02"
@@ -29,28 +41,17 @@ $itemType =
 "GD5DesignPerto"
 
 $teamcenterFunctionsPath =
-Join-Path `
-    $PSScriptRoot `
-    "teamcenter_functions.ps1"
+Join-Path  $PSScriptRoot  "functions\teamcenter_functions.ps1"
 
 
-# ============================================================
-# VALIDATION
-# ============================================================
 
 if (-not (
-        Test-Path `
-            -LiteralPath $teamcenterFunctionsPath `
-            -PathType Leaf
+        Test-Path  -LiteralPath $teamcenterFunctionsPath  -PathType Leaf
     )) {
 
-    Write-Host `
-        "[ERROR] Teamcenter functions file not found:" `
-        -ForegroundColor Red
+    Write-Host  "[ERROR] Teamcenter functions file not found:"  -ForegroundColor Red
 
-    Write-Host `
-        $teamcenterFunctionsPath `
-        -ForegroundColor Red
+    Write-Host  $teamcenterFunctionsPath  -ForegroundColor Red
 
     exit 1
 }
@@ -58,63 +59,72 @@ if (-not (
 . $teamcenterFunctionsPath
 
 $nxNamesFile =
-Join-Path `
-    $PastaNx `
-    "NomesNx.txt"
+Join-Path  $PastaNx  "NomesNx.txt"
 
 $nxNames =
 @{}
 
-if (-not (
-        Test-Path `
-            -LiteralPath $nxNamesFile `
-            -PathType Leaf
-    )) {
+if (
+    Test-Path `
+        -LiteralPath $nxNamesFile `
+        -PathType Leaf
+) {
+
+    Get-Content `
+        -LiteralPath $nxNamesFile `
+        -Encoding UTF8 |
+    ForEach-Object {
+
+        $parts =
+        $_ -split '\|', 2
+
+        if ($parts.Count -ne 2) {
+            return
+        }
+
+        $fileCode =
+        $parts[0].Trim()
+
+        if ($fileCode -match '^(.+)_\d+$') {
+            $fileCode =
+            $Matches[1]
+        }
+
+        $attributeValue =
+        $parts[1].Trim()
+
+        $itemDescription =
+        $attributeValue
+
+        if ($attributeValue -match '^[^#]+#(.*?)#?$') {
+            $itemDescription =
+            $Matches[1].Trim()
+        }
+
+        if (
+            -not [string]::IsNullOrWhiteSpace($fileCode) -and
+            -not [string]::IsNullOrWhiteSpace($itemDescription)
+        ) {
+            $nxNames[$fileCode] =
+            $itemDescription
+        }
+    }
+}
+elseif ($DocumentType -eq "Assembly") {
 
     throw `
-        "NomesNx.txt nao encontrado: $nxNamesFile"
+        "NomesNx.txt nao encontrado para a montagem: $nxNamesFile"
 }
+else {
 
-Get-Content `
-    -LiteralPath $nxNamesFile `
-    -Encoding UTF8 |
-ForEach-Object {
+    Write-Host `
+        "  [WARNING] NomesNx.txt nao encontrado para a peca individual." `
+        -ForegroundColor Yellow
 
-    $parts =
-    $_ -split '\|', 2
-
-    if ($parts.Count -ne 2) {
-        return
-    }
-
-    $fileCode =
-    $parts[0].Trim()
-
-    if ($fileCode -match '^(.+)_\d+$') {
-        $fileCode =
-        $Matches[1]
-    }
-
-    $attributeValue =
-    $parts[1].Trim()
-
-    $itemDescription =
-    $attributeValue
-
-    if ($attributeValue -match '^[^#]+#(.*?)#?$') {
-        $itemDescription =
-        $Matches[1].Trim()
-    }
-
-    if (
-        -not [string]::IsNullOrWhiteSpace($fileCode) -and
-        -not [string]::IsNullOrWhiteSpace($itemDescription)
-    ) {
-        $nxNames[$fileCode] =
-        $itemDescription
-    }
+    Write-Host `
+        "  -> A peca sera importada sem aplicar o nome extraido do NX." `
+        -ForegroundColor Gray
 }
-
 $aliasFallback = @{
     "_2" = "_1"
     "_4" = "_3"
@@ -141,21 +151,16 @@ if (-not $nxNames.ContainsKey("_7")) {
 }
 
 $structureNamesFile =
-Join-Path `
-(Split-Path -Parent $PastaNx) `
-    "estrutura_montagem.txt"
+Join-Path  (Split-Path -Parent $PastaNx)  "estrutura_montagem.txt"
 
 if (Test-Path -LiteralPath $structureNamesFile) {
 
-    Get-Content `
-        -LiteralPath $structureNamesFile `
-        -Encoding UTF8 |
+    Get-Content  -LiteralPath $structureNamesFile  -Encoding UTF8 |
     ForEach-Object {
 
         $line =
         $_.Trim()
 
-        # Remove o prefixo "MONTAGEM: " se existir, para tratar a linha do item pai igual as outras
         $line =
         $line -replace '^MONTAGEM:\s*', ''
 
@@ -180,17 +185,13 @@ if (Test-Path -LiteralPath $structureNamesFile) {
                 $nxNames[$code] =
                 $description
 
-                Write-Host `
-                    "  [OK] Nome recuperado da estrutura NX: $code = $description" `
-                    -ForegroundColor Green
+                Write-Host  "  [OK] Nome recuperado da estrutura NX: $code = $description"  -ForegroundColor Green
             }
         }
     }
 }
-# ============================================================
-# CONSOLE OUTPUT
-# ============================================================
 
+# Section: Print a console section heading
 function Write-Section {
 
     param(
@@ -205,6 +206,7 @@ function Write-Section {
 }
 
 
+# Section: Print a success message
 function Write-Success {
 
     param(
@@ -212,12 +214,11 @@ function Write-Success {
         [string]$Message
     )
 
-    Write-Host `
-        "  [OK] $Message" `
-        -ForegroundColor Green
+    Write-Host  "  [OK] $Message"  -ForegroundColor Green
 }
 
 
+# Section: Print a failure message
 function Write-Failure {
 
     param(
@@ -225,12 +226,11 @@ function Write-Failure {
         [string]$Message
     )
 
-    Write-Host `
-        "  [ERROR] $Message" `
-        -ForegroundColor Red
+    Write-Host  "  [ERROR] $Message"  -ForegroundColor Red
 }
 
 
+# Section: Print an informational message
 function Write-Info {
 
     param(
@@ -238,15 +238,11 @@ function Write-Info {
         [string]$Message
     )
 
-    Write-Host `
-        "  -> $Message" `
-        -ForegroundColor Gray
+    Write-Host  "  -> $Message"  -ForegroundColor Gray
 }
 
 
-# ============================================================
-# NX INPUT VALIDATION
-# ============================================================
+# Section: Find NX part files
 function Get-NxPartFiles {
 
     param(
@@ -255,22 +251,15 @@ function Get-NxPartFiles {
     )
 
     if (-not (
-            Test-Path `
-                -LiteralPath $FolderPath `
-                -PathType Container
+            Test-Path  -LiteralPath $FolderPath  -PathType Container
         )) {
 
-        throw `
-            "NX folder not found at '$FolderPath'."
+        throw  "NX folder not found at '$FolderPath'."
     }
 
     $partFiles =
     @(
-        Get-ChildItem `
-            -LiteralPath $FolderPath `
-            -Filter "*.prt" `
-            -File `
-            -Recurse
+        Get-ChildItem  -LiteralPath $FolderPath  -Filter "*.prt"  -File  -Recurse
     ) |
     Where-Object {
 
@@ -280,22 +269,26 @@ function Get-NxPartFiles {
 
     if ($partFiles.Count -eq 0) {
 
-        throw `
-            "No PRT files were found at '$FolderPath'."
+        throw  "No PRT files were found at '$FolderPath'."
     }
 
     return $partFiles
 }
-
-
-# ============================================================
-# TEAMCENTER PART IMPORT
-# ============================================================
+# Section: Import an NX part into Teamcenter
 function Import-NxPartToTeamcenter {
 
     param(
         [Parameter(Mandatory = $true)]
-        [System.IO.FileInfo]$PartFile
+        [System.IO.FileInfo]$PartFile,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateSet(
+            "Create",
+            "Existing"
+        )]
+        [string]$TargetMode,
+
+        [string]$TargetItemCode
     )
 
     $sourcePartCode =
@@ -314,48 +307,74 @@ function Import-NxPartToTeamcenter {
 
     Write-Host ""
 
-    Write-Info `
-        -Message "Processing: $($PartFile.Name)"
+    Write-Info  -Message "Processing: $($PartFile.Name)"
 
-    $teamcenterDestination =
-    New-NextTeamcenterItem `
-        -SourceCode $sourcePartCode `
-        -CompanyCode $companyCode `
-        -ItemType $itemType
+    if ($TargetMode -eq "Existing") {
 
-    if ($null -eq $teamcenterDestination) {
+        if ([System.String]::IsNullOrWhiteSpace($TargetItemCode)) {
 
-        throw `
-            "Teamcenter destination was not returned for '$sourcePartCode'."
+            throw `
+                "O codigo do item existente nao foi informado."
+        }
+
+        Write-Info `
+            -Message "Procurando item existente: $TargetItemCode"
+
+        $teamcenterItem =
+        Get-TeamcenterItem `
+            -ItemCode $TargetItemCode `
+            -CompanyCode $companyCode
+
+        if ($null -eq $teamcenterItem) {
+
+            throw `
+                "O item '$TargetItemCode' nao foi encontrado no Teamcenter."
+        }
+
+        $teamcenterCode =
+        $TargetItemCode
+
+        Write-Success `
+            -Message "Item existente localizado: $teamcenterCode"
     }
+    else {
 
-    $teamcenterCode =
-    $teamcenterDestination.Code
+        $teamcenterDestination =
+        New-NextTeamcenterItem `
+            -SourceCode $sourcePartCode `
+            -CompanyCode $companyCode `
+            -ItemType $itemType
 
-    $teamcenterItem =
-    $teamcenterDestination.Item
+        if ($null -eq $teamcenterDestination) {
 
-    if ($null -eq $teamcenterItem) {
+            throw `
+                "Teamcenter destination was not returned for '$sourcePartCode'."
+        }
 
-        throw `
-            "Teamcenter item was not returned for '$teamcenterCode'."
+        $teamcenterCode =
+        $teamcenterDestination.Code
+
+        $teamcenterItem =
+        $teamcenterDestination.Item
+
+        if ($null -eq $teamcenterItem) {
+
+            throw `
+                "Teamcenter item was not returned for '$teamcenterCode'."
+        }
     }
-
     $teamcenterRevision =
-    Get-TeamcenterRevision `
-        -Item $teamcenterItem
+    Get-TeamcenterRevision  -Item $teamcenterItem
 
     if ($null -eq $teamcenterRevision) {
 
-        throw `
-            "Teamcenter revision was not found for '$teamcenterCode'."
+        throw  "Teamcenter revision was not found for '$teamcenterCode'."
     }
 
     if (-not [string]::IsNullOrWhiteSpace($itemDescription)) {
 
         $itemProperties =
-        New-Object `
-            "System.Collections.Generic.Dictionary``2[System.String,System.String]"
+        New-Object  "System.Collections.Generic.Dictionary``2[System.String,System.String]"
 
         $itemProperties.Add(
             "object_name",
@@ -368,8 +387,7 @@ function Import-NxPartToTeamcenter {
         )
 
         $revisionProperties =
-        New-Object `
-            "System.Collections.Generic.Dictionary``2[System.String,System.String]"
+        New-Object  "System.Collections.Generic.Dictionary``2[System.String,System.String]"
 
         $revisionProperties.Add(
             "object_name",
@@ -391,27 +409,19 @@ function Import-NxPartToTeamcenter {
             $revisionProperties
         )
 
-        Write-Success `
-            -Message "Nome NX aplicado: $sourcePartCode = $itemDescription"
+        Write-Success  -Message "Nome NX aplicado: $sourcePartCode = $itemDescription"
     }
     else {
 
-        Write-Host `
-            "  [WARNING] Nome NX nao encontrado para: $sourcePartCode" `
-            -ForegroundColor Yellow
+        Write-Host  "  [WARNING] Nome NX nao encontrado para: $sourcePartCode"  -ForegroundColor Yellow
     }
 
     $importResult =
-    Import-TeamcenterPrt `
-        -Revision $teamcenterRevision `
-        -ItemCode $teamcenterCode `
-        -FilePath $PartFile.FullName
+    Import-TeamcenterPrt  -Revision $teamcenterRevision  -ItemCode $teamcenterCode  -FilePath $PartFile.FullName
 
-    Write-Success `
-        -Message "PRT imported: $teamcenterCode"
+    Write-Success  -Message "PRT imported: $teamcenterCode"
 
-    Write-Info `
-        -Message "Import result: $importResult"
+    Write-Info  -Message "Import result: $importResult"
 
     return [PSCustomObject]@{
         SourceFile     = $PartFile.FullName
@@ -421,32 +431,19 @@ function Import-NxPartToTeamcenter {
     }
 }
 
-# ============================================================
-# MAIN EXECUTION
-# ============================================================
-
 try {
 
-    Write-Section `
-        -Title "TEAMCENTER CONNECTION"
+    Write-Section  -Title "TEAMCENTER CONNECTION"
 
-    Connect-Teamcenter
+    $null = Connect-Teamcenter
 
-    Write-Success `
-        -Message "Teamcenter connection established."
-
-    Write-Section `
-        -Title "NX FILE VALIDATION"
-
+    Write-Success  -Message "Teamcenter connection established."
     $nxPartFiles =
     @(
-        Get-NxPartFiles `
-            -FolderPath $PastaNx
+        Get-NxPartFiles  -FolderPath $PastaNx
     )
     $posFile =
-    Join-Path `
-        $PastaNx `
-        "Posicionamento.txt"
+    Join-Path  $PastaNx  "Posicionamento.txt"
 
     $estruturaView =
     [System.Collections.Generic.List[object]]::new()
@@ -454,24 +451,16 @@ try {
     if ($DocumentType -eq "Assembly") {
 
         Write-Host ""
-        Write-Host "POS FILE:"
-        Write-Host $posFile
-
         if (-not (
-                Test-Path `
-                    -LiteralPath $posFile `
-                    -PathType Leaf
+                Test-Path  -LiteralPath $posFile  -PathType Leaf
             )) {
 
-            throw `
-                "Posicionamento.txt nao encontrado: $posFile"
+            throw  "Posicionamento.txt nao encontrado: $posFile"
         }
 
-        Write-Section `
-            -Title "VIEW DETECTADA PELO NX"
+        Write-Section  -Title "VIEW DETECTADA PELO NX"
 
-        Get-Content `
-            -LiteralPath $posFile |
+        Get-Content  -LiteralPath $posFile |
         ForEach-Object {
 
             $parts =
@@ -515,8 +504,7 @@ try {
 
         if ($estruturaView.Count -eq 0) {
 
-            throw `
-                "Nenhuma ocorrencia valida foi encontrada em '$posFile'."
+            throw  "Nenhuma ocorrencia valida foi encontrada em '$posFile'."
         }
 
         Write-Host ""
@@ -536,31 +524,20 @@ try {
     }
     else {
 
-        Write-Section `
-            -Title "PECA INDIVIDUAL"
+        Write-Section  -Title "PECA INDIVIDUAL"
 
-        Write-Success `
-            -Message "Peca individual confirmada pelo importador."
+        Write-Success  -Message "Peca individual confirmada pelo importador."
 
-        Write-Info `
-            -Message "Posicionamento.txt nao sera utilizado."
+        Write-Info  -Message "Posicionamento.txt nao sera utilizado."
 
-        Write-Info `
-            -Message "A criacao da BOM sera ignorada."
+        Write-Info  -Message "A criacao da BOM sera ignorada."
     }
 
-    foreach ($f in $nxPartFiles) {
-        Write-Host $f.FullName
-    }
+    Write-Success  -Message "$($nxPartFiles.Count) PRT file(s) found."
 
-    Write-Success `
-        -Message "$($nxPartFiles.Count) PRT file(s) found."
+    Write-Info  -Message "NX folder: $PastaNx"
 
-    Write-Info `
-        -Message "NX folder: $PastaNx"
-
-    Write-Section `
-        -Title "TEAMCENTER IMPORT"
+    Write-Section  -Title "TEAMCENTER IMPORT"
 
     Write-Host ""
     Write-Host "ATENCAO: as proximas linhas vao CRIAR itens reais no Teamcenter." -ForegroundColor Yellow
@@ -579,20 +556,20 @@ try {
 
         $importResult =
         Import-NxPartToTeamcenter `
-            -PartFile $nxPartFile
+            -PartFile $nxPartFile `
+            -TargetMode $ItemTargetMode `
+            -TargetItemCode $ExistingItemCode
 
         $importResults.Add(
             $importResult
         )
     }
 
-    Write-Section `
-        -Title "IMPORT RESULT"
+    Write-Section  -Title "IMPORT RESULT"
 
     foreach ($result in $importResults) {
 
-        Write-Success `
-            -Message "$($result.SourcePartCode) -> $($result.TeamcenterCode)"
+        Write-Success  -Message "$($result.SourcePartCode) -> $($result.TeamcenterCode)"
     }
 
     if ($DocumentType -eq "Assembly") {
@@ -612,18 +589,14 @@ try {
             throw "Item pai nao encontrado nos resultados: $parentSourceCode"
         }
 
-        # O restante da logica da BOM continua aqui sem alteracao
         $parentItem =
-        Get-TeamcenterItem `
-            -ItemCode $parentResult.TeamcenterCode
+        Get-TeamcenterItem  -ItemCode $parentResult.TeamcenterCode
 
         $parentRevision =
-        Get-TeamcenterRevision `
-            -Item $parentItem
+        Get-TeamcenterRevision  -Item $parentItem
 
         $policyProps =
-        New-Object `
-            'System.Collections.Generic.List[string[]]'
+        New-Object  'System.Collections.Generic.List[string[]]'
 
         $policyProps.Add(
             [string[]]@(
@@ -661,41 +634,33 @@ try {
 
                 if ($null -eq $childResult) {
 
-                    Write-Host `
-                        "  [WARNING] Filho nao importado: $($occurrence.Child)" `
-                        -ForegroundColor Yellow
+                    Write-Host  "  [WARNING] Filho nao importado: $($occurrence.Child)"  -ForegroundColor Yellow
 
                     continue
                 }
 
                 $childItem =
-                Get-TeamcenterItem `
-                    -ItemCode $childResult.TeamcenterCode
+                Get-TeamcenterItem  -ItemCode $childResult.TeamcenterCode
 
                 $childRevision =
-                Get-TeamcenterRevision `
-                    -Item $childItem
+                Get-TeamcenterRevision  -Item $childItem
 
                 if ($null -eq $childRevision) {
 
-                    Write-Host `
-                        "  [WARNING] Revisao nao encontrada: $($occurrence.Child)" `
-                        -ForegroundColor Yellow
+                    Write-Host  "  [WARNING] Revisao nao encontrada: $($occurrence.Child)"  -ForegroundColor Yellow
 
                     continue
                 }
 
                 $singleChildList =
-                New-Object `
-                    'System.Collections.Generic.List[Teamcenter.Soa.Client.Model.Strong.ItemRevision]'
+                New-Object  'System.Collections.Generic.List[Teamcenter.Soa.Client.Model.Strong.ItemRevision]'
 
                 $singleChildList.Add(
                     $childRevision
                 )
 
                 $attributes =
-                New-Object `
-                    'System.Collections.Generic.List[System.Collections.Hashtable]'
+                New-Object  'System.Collections.Generic.List[System.Collections.Hashtable]'
 
                 $occurrenceAttributes =
                 New-Object System.Collections.Hashtable
@@ -709,11 +674,9 @@ try {
                     $occurrenceAttributes
                 )
 
-                Write-Info `
-                    -Message "Adicionando ocorrencia: $($occurrence.OccurrenceCode)"
+                Write-Info  -Message "Adicionando ocorrencia: $($occurrence.OccurrenceCode)"
 
-                Write-Info `
-                    -Message "Transform: $($occurrence.Transform)"
+                Write-Info  -Message "Transform: $($occurrence.Transform)"
 
                 $occurrenceParentResult =
                 $importResults |
@@ -724,26 +687,20 @@ try {
 
                 if ($null -eq $occurrenceParentResult) {
 
-                    Write-Host `
-                        "  [WARNING] Pai nao localizado: $($occurrence.Parent)" `
-                        -ForegroundColor Yellow
+                    Write-Host  "  [WARNING] Pai nao localizado: $($occurrence.Parent)"  -ForegroundColor Yellow
 
                     continue
                 }
 
                 $occurrenceParentItem =
-                Get-TeamcenterItem `
-                    -ItemCode $occurrenceParentResult.TeamcenterCode
+                Get-TeamcenterItem  -ItemCode $occurrenceParentResult.TeamcenterCode
 
                 $occurrenceParentRevision =
-                Get-TeamcenterRevision `
-                    -Item $occurrenceParentItem
+                Get-TeamcenterRevision  -Item $occurrenceParentItem
 
                 if ($null -eq $occurrenceParentRevision) {
 
-                    Write-Host `
-                        "  [WARNING] Revisao do pai nao localizada: $($occurrence.Parent)" `
-                        -ForegroundColor Yellow
+                    Write-Host  "  [WARNING] Revisao do pai nao localizada: $($occurrence.Parent)"  -ForegroundColor Yellow
 
                     continue
                 }
@@ -757,52 +714,45 @@ try {
             }
 
             Write-Host ""
-            Write-Success `
-                -Message "BOM criada com posicionamento."
+            Write-Success  -Message "BOM criada com posicionamento."
         }
         catch {
 
             Write-Host ""
 
-            Write-Failure `
-                -Message "Erro ao criar BOM: $($_.Exception.Message)"
+            Write-Failure  -Message "Erro ao criar BOM: $($_.Exception.Message)"
 
             throw
         }
         finally {
 
-            Close-LeftoverBomWindow `
-                -Revision $parentRevision
+            Close-LeftoverBomWindow  -Revision $parentRevision
         }
 
-        }
-else {
+    }
+    else {
+
+        Write-Host ""
+
+        Write-Info  -Message "Criacao da BOM ignorada para peca individual."
+    }
 
     Write-Host ""
 
-    Write-Info `
-        -Message "Criacao da BOM ignorada para peca individual."
+    Write-Success  -Message "Teamcenter import completed."
+
+    Write-Info  -Message "Imported files: $($importResults.Count)"
+
+    exit 0
 }
+catch {
 
-        Write-Host ""
+    Write-Failure  -Message $_.Exception.Message
 
-        Write-Success `
-            -Message "Teamcenter import completed."
+    Write-Host ""
+    Write-Host "[FULL ERROR]" -ForegroundColor DarkGray
+    Write-Host $_.Exception.ToString() -ForegroundColor DarkGray
+    Write-Host ""
 
-        Write-Info `
-            -Message "Imported files: $($importResults.Count)"
-
-        exit 0
-    }
-    catch {
-
-        Write-Failure `
-            -Message $_.Exception.Message
-
-        Write-Host ""
-        Write-Host "[FULL ERROR]" -ForegroundColor DarkGray
-        Write-Host $_.Exception.ToString() -ForegroundColor DarkGray
-        Write-Host ""
-
-        exit 1
-    }
+    exit 1
+}
