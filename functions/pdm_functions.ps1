@@ -30,9 +30,10 @@ function Test-Environment {
         }
     }
 
-    if (-not (
-            Test-Path -LiteralPath $vaultCredentialPath
-        )) {
+    if (
+        [string]::IsNullOrWhiteSpace($env:VAULT_USERNAME) -or
+        [string]::IsNullOrWhiteSpace($env:VAULT_PASSWORD_ENCRYPTED)
+    ) {
 
         Write-WarningMessage  -Message "Vault credential was not found."
 
@@ -60,11 +61,15 @@ function Test-Environment {
             throw  "Vault credential configuration failed with code $($credentialProcess.ExitCode)."
         }
 
-        if (-not (
-                Test-Path -LiteralPath $vaultCredentialPath
-            )) {
+        Import-ProjectEnvironment `
+            -ProjectRoot (Split-Path $PSScriptRoot -Parent)
 
-            throw "Vault credential file was not created."
+        if (
+            [string]::IsNullOrWhiteSpace($env:VAULT_USERNAME) -or
+            [string]::IsNullOrWhiteSpace($env:VAULT_PASSWORD_ENCRYPTED)
+        ) {
+
+            throw "Vault credential was not saved to the environment file."
         }
     }
 
@@ -86,16 +91,8 @@ function Connect-PdmVault {
 
     Write-Section  -Title "CONNECTING TO PDM VAULT"
 
-    $credential =
-    Import-Clixml  -LiteralPath $vaultCredentialPath
-
-    if ($null -eq $credential) {
-        throw "Vault credential file could not be loaded."
-    }
-
     $securePassword =
-    $credential.SenhaCriptografada |
-    ConvertTo-SecureString
+    ConvertTo-SecureString $env:VAULT_PASSWORD_ENCRYPTED
 
     $passwordPointer =
     [System.IntPtr]::Zero
@@ -118,7 +115,7 @@ function Connect-PdmVault {
         New-Object EdmLib.EdmVault5Class
 
         $vault.Login(
-            $credential.Usuario,
+            $env:VAULT_USERNAME,
             $plainTextPassword,
             $vaultName
         )

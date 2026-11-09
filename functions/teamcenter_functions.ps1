@@ -1,6 +1,9 @@
 # === Teamcenter integration helper functions ===
 
 # Section: Establish the Teamcenter connection
+. (Join-Path $PSScriptRoot "environment_functions.ps1")
+Import-ProjectEnvironment -ProjectRoot (Split-Path $PSScriptRoot -Parent)
+
 # ============================================================
 # TEAMCENTER IMPORTER AVAILABILITY
 # Verifica se o Importar GD ja esta instalado localmente.
@@ -9,8 +12,7 @@
 
 function Confirm-TeamcenterImporter {
 
-    $importerExecutablePath =
-    "C:\Temp\ImportarGD\Importar GD.exe"
+    $importerExecutablePath = $env:TEAMCENTER_IMPORTER_EXECUTABLE
 
     if (
         Test-Path `
@@ -122,13 +124,125 @@ function Confirm-TeamcenterImporter {
 
     return $importerExecutablePath
 }
+function Get-TeamcenterSettings {
+
+    $teamcenterEnvironment = [string]$env:TEAMCENTER_ENV
+
+    if ([string]::IsNullOrWhiteSpace($teamcenterEnvironment)) {
+
+        throw "TEAMCENTER_ENV nao foi configurado no arquivo .env."
+    }
+
+    switch ($teamcenterEnvironment.Trim().ToLowerInvariant()) {
+
+        "teste" {
+
+            $teamcenterEnvironment = "Teste"
+            $teamcenterServerUrl = [string]$env:TEAMCENTER_TEST_URL
+            $expectedHost = [string]$env:TEAMCENTER_TEST_EXPECTED_HOST
+            $teamcenterUser = [string]$env:TEAMCENTER_TEST_USER
+            $teamcenterPassword = [string]$env:TEAMCENTER_TEST_PASSWORD
+            $companyCode = [string]$env:TEAMCENTER_TEST_COMPANY_CODE
+            $itemType = [string]$env:TEAMCENTER_TEST_ITEM_TYPE
+            $companyCodeSetting = "TEAMCENTER_TEST_COMPANY_CODE"
+            $itemTypeSetting = "TEAMCENTER_TEST_ITEM_TYPE"
+        }
+
+        "processo" {
+
+            $teamcenterEnvironment = "Processo"
+            $teamcenterServerUrl = [string]$env:TEAMCENTER_PROCESS_URL
+            $expectedHost = [string]$env:TEAMCENTER_PROCESS_EXPECTED_HOST
+            $teamcenterUser = [string]$env:TEAMCENTER_PROCESS_USER
+            $teamcenterPassword = [string]$env:TEAMCENTER_PROCESS_PASSWORD
+            $companyCode = [string]$env:TEAMCENTER_PROCESS_COMPANY_CODE
+            $itemType = [string]$env:TEAMCENTER_PROCESS_ITEM_TYPE
+            $companyCodeSetting = "TEAMCENTER_PROCESS_COMPANY_CODE"
+            $itemTypeSetting = "TEAMCENTER_PROCESS_ITEM_TYPE"
+        }
+
+        default {
+
+            throw (
+                "Ambiente Teamcenter invalido: '$teamcenterEnvironment'. " +
+                "Use Teste ou Processo."
+            )
+        }
+    }
+
+    foreach ($setting in @(
+            @{ Name = "URL"; Value = $teamcenterServerUrl },
+            @{ Name = "servidor esperado"; Value = $expectedHost },
+            @{ Name = "usuario"; Value = $teamcenterUser },
+            @{ Name = $companyCodeSetting; Value = $companyCode },
+            @{ Name = $itemTypeSetting; Value = $itemType }
+        )) {
+
+        if ([string]::IsNullOrWhiteSpace([string]$setting.Value)) {
+
+            throw (
+                "A configuracao de $($setting.Name) nao foi preenchida " +
+                "para o ambiente '$teamcenterEnvironment' no .env."
+            )
+        }
+    }
+
+    $parsedUri = $null
+
+    if (-not [System.Uri]::TryCreate(
+            $teamcenterServerUrl.Trim(),
+            [System.UriKind]::Absolute,
+            [ref]$parsedUri
+        )) {
+
+        throw "URL invalida para o ambiente '$teamcenterEnvironment'."
+    }
+
+    if (
+        $parsedUri.Scheme -notin @("http", "https") -or
+        $parsedUri.Host -ine $expectedHost
+    ) {
+
+        throw (
+            "A URL configurada nao corresponde ao ambiente " +
+            "'$teamcenterEnvironment'. Servidor esperado: " +
+            "'$expectedHost'; servidor recebido: '$($parsedUri.Host)'."
+        )
+    }
+
+    if ([string]::IsNullOrWhiteSpace($teamcenterPassword)) {
+
+        $securePassword = Read-Host `
+            "Senha do Teamcenter para '$teamcenterUser' ($teamcenterEnvironment)" `
+            -AsSecureString
+
+        $teamcenterPassword = [System.Net.NetworkCredential]::new(
+            "",
+            $securePassword
+        ).Password
+    }
+
+    if ([string]::IsNullOrWhiteSpace($teamcenterPassword)) {
+
+        throw "A senha do Teamcenter nao foi informada."
+    }
+
+    return [PSCustomObject]@{
+        Environment = $teamcenterEnvironment
+        Url = $teamcenterServerUrl.Trim()
+        User = $teamcenterUser.Trim()
+        Password = $teamcenterPassword
+        CompanyCode = $companyCode.Trim()
+        ItemType = $itemType.Trim()
+    }
+}
+
 function Connect-Teamcenter {
 
     $importerExecutablePath =
     Confirm-TeamcenterImporter
 
-    $teamcenterServerUrl =
-    "http://perto37-novo.perto.com.br:8080/tc"
+    $settings = Get-TeamcenterSettings
 
     if (-not (
             Test-Path  -LiteralPath $importerExecutablePath  -PathType Leaf
@@ -161,7 +275,7 @@ function Connect-Teamcenter {
     [System.Activator]::CreateInstance(
         $sessionType,
         @(
-            $teamcenterServerUrl
+            $settings.Url
         )
     )
 
@@ -170,13 +284,19 @@ function Connect-Teamcenter {
         throw  "Teamcenter session returned NULL."
     }
 
+    $teamcenterGroup = [string]$env:TEAMCENTER_GROUP
+    $teamcenterRole = [string]$env:TEAMCENTER_ROLE
+    $script:TeamcenterEnvironment = $settings.Environment
+    $script:TeamcenterCompanyCode = $settings.CompanyCode
+    $script:TeamcenterItemType = $settings.ItemType
+
     $authenticatedUser =
     $script:TeamcenterSession.login(
-        "infodba",
-        "infodba",
-        "",
-        "",
-        "SoaAppX"
+        $settings.User,
+        $settings.Password,
+        $teamcenterGroup,
+        $teamcenterRole,
+        $env:TEAMCENTER_APPLICATION
     )
 
     if ($null -eq $authenticatedUser) {
@@ -268,8 +388,18 @@ function Get-TeamcenterItem {
         [Parameter(Mandatory = $true)]
         [string]$ItemCode,
 
-        [string]$CompanyCode = "02"
+        [string]$CompanyCode
     )
+
+    if ([string]::IsNullOrWhiteSpace($CompanyCode)) {
+
+        $CompanyCode = [string]$script:TeamcenterCompanyCode
+    }
+
+    if ([string]::IsNullOrWhiteSpace($CompanyCode)) {
+
+        throw "CompanyCode nao foi configurado para o ambiente Teamcenter ativo."
+    }
 
     $getItemMethod =
     Get-TeamcenterMethod  -MethodName "getItem"  -ParameterCount 2
@@ -296,15 +426,35 @@ function New-NextTeamcenterItem {
         [ValidateNotNullOrEmpty()]
         [string]$SourceCode,
 
-        [string]$CompanyCode = "02",
+        [string]$CompanyCode,
 
-        [string]$ItemType = "GD5DesignPerto",
+        [string]$ItemType,
+
+        [switch]$ReuseExisting,
 
         [ValidateRange(1, 10000)]
         [int]$MaximumAttempts = 100
     )
 
-    if ($SourceCode -match '^(.*)-(\d+)$') {
+    if ([string]::IsNullOrWhiteSpace($CompanyCode)) {
+
+        $CompanyCode = [string]$script:TeamcenterCompanyCode
+    }
+
+    if ([string]::IsNullOrWhiteSpace($ItemType)) {
+
+        $ItemType = [string]$script:TeamcenterItemType
+    }
+
+    if (
+        [string]::IsNullOrWhiteSpace($CompanyCode) -or
+        [string]::IsNullOrWhiteSpace($ItemType)
+    ) {
+
+        throw "CompanyCode e ItemType devem estar configurados para o ambiente Teamcenter ativo."
+    }
+
+    if (-not $ReuseExisting -and $SourceCode -match '^(.*)-(\d+)$') {
 
         $baseCode =
         $Matches[1]
@@ -350,6 +500,16 @@ function New-NextTeamcenterItem {
         )
 
         if ($null -ne $existingItem) {
+
+            if ($ReuseExisting -and $attempt -eq 0) {
+
+                Write-Host  "[INFO] Reusing existing item: $candidateCode"  -ForegroundColor Gray
+
+                return [PSCustomObject]@{
+                    Code = $candidateCode
+                    Item = $existingItem
+                }
+            }
 
             Write-Host  "[WARNING] Item already exists: $candidateCode"  -ForegroundColor Yellow
 
@@ -590,12 +750,195 @@ function Add-TeamcenterBomChildrenSafe {
             $dmService.SetProperties(@($newBomline), $transformProps) | Out-Null
         }
 
-        $saveBomMethod.Invoke($null, @($bomWindow))
+        $null =
+        $saveBomMethod.Invoke(
+            $null,
+            @(
+                $bomWindow
+            )
+        )
 
         return $newBomline
     }
     finally {
 
-        $closeBomMethod.Invoke($null, @($bomWindow))
+        $null =
+        $closeBomMethod.Invoke(
+            $null,
+            @(
+                $bomWindow
+            )
+        )
     }
+}
+
+function Get-TeamcenterBomOccurrenceKey {
+
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$ItemCode,
+
+        [AllowEmptyString()]
+        [string]$Transform
+    )
+
+    $normalizedTransform =
+    [System.Text.RegularExpressions.Regex]::Replace(
+        ([string]$Transform).Trim(),
+        '\s+',
+        ' '
+    )
+
+    return "$($ItemCode.Trim())|$normalizedTransform"
+}
+
+function Get-TeamcenterBomOccurrenceKeys {
+
+    param(
+        [Parameter(Mandatory = $true)]
+        $ParentRevision
+    )
+
+    $occurrenceKeys =
+    [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+
+    $openBomMethod =
+    Get-TeamcenterMethod -MethodName "openBOMWindow" -ParameterCount 1
+
+    $closeBomMethod =
+    Get-TeamcenterMethod -MethodName "closeBOMWindow" -ParameterCount 1
+
+    $windowResult =
+    $openBomMethod.Invoke(
+        $null,
+        @(
+            $ParentRevision
+        )
+    )
+
+    if ($null -eq $windowResult -or $windowResult.Count -lt 2) {
+
+        throw "BOM window could not be opened to inspect existing occurrences."
+    }
+
+    $bomWindow = $windowResult[0]
+    $parentLine = $windowResult[1]
+
+    try {
+
+        $connection =
+        [Teamcenter.ClientX.Session]::getConnection()
+
+        $dmService =
+        [Teamcenter.Services.Strong.Core.DataManagementService]::getService(
+            $connection
+        )
+
+        $dmService.GetProperties(
+            @($parentLine),
+            @("bl_child_lines")
+        ) | Out-Null
+
+        $childLines =
+        @($parentLine.Bl_child_lines)
+
+        if ($childLines.Count -eq 0) {
+            return ,$occurrenceKeys
+        }
+
+        $dmService.GetProperties(
+            $childLines,
+            @(
+                "bl_item",
+                "bl_plmxml_occ_xform"
+            )
+        ) | Out-Null
+
+        $childItems =
+        [System.Collections.Generic.List[object]]::new()
+
+        foreach ($childLine in $childLines) {
+
+            $itemProperty =
+            $childLine.getPropertyObject("bl_item")
+
+            if ($null -eq $itemProperty) {
+                throw "Existing BOM line has no bl_item property."
+            }
+
+            $childItem =
+            $itemProperty.getModelObjectValue()
+
+            if ($null -eq $childItem) {
+                throw "Existing BOM line has no child item."
+            }
+
+            $childItems.Add($childItem)
+        }
+
+        $dmService.GetProperties(
+            $childItems.ToArray(),
+            @("item_id")
+        ) | Out-Null
+
+        for ($index = 0; $index -lt $childLines.Count; $index++) {
+
+            $itemIdProperty =
+            $childItems[$index].getPropertyObject("item_id")
+
+            if ($null -eq $itemIdProperty) {
+                throw "Existing BOM child item has no item_id property."
+            }
+
+            $childItemCode =
+            [string]$itemIdProperty.getStringValue()
+
+            $transformProperty =
+            $childLines[$index].getPropertyObject("bl_plmxml_occ_xform")
+
+            $transformValues =
+            if ($null -eq $transformProperty) {
+                @()
+            }
+            else {
+                @($transformProperty.getStringValueArray())
+            }
+
+            $transform =
+            ($transformValues | ForEach-Object { [string]$_ }) -join ' '
+
+            $occurrenceKey =
+            Get-TeamcenterBomOccurrenceKey `
+                -ItemCode $childItemCode `
+                -Transform $transform
+
+            [void]$occurrenceKeys.Add($occurrenceKey)
+        }
+
+        return ,$occurrenceKeys
+    }
+    finally {
+
+        $null =
+        $closeBomMethod.Invoke(
+            $null,
+            @(
+                $bomWindow
+            )
+        )
+    }
+}
+
+function Resolve-TeamcenterCatalogItem {
+
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$NomeGenerico
+    )
+
+    # restante da funcao
 }

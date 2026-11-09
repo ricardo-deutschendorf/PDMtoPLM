@@ -1,6 +1,6 @@
 # ============================================================
 # TEAMCENTER ITEM TARGET SELECTION
-# Define se sera criado um item ou utilizado um item existente.
+# Define o destino para pecas individuais e montagens.
 # Nenhuma alteracao e feita no Teamcenter nesta etapa.
 # ============================================================
 
@@ -10,10 +10,12 @@ function Select-TeamcenterItemTarget {
         -Title "TEAMCENTER ITEM DESTINATION"
 
     Write-Host ""
-    Write-Host "O item ja existe no Teamcenter?"
+    Write-Host "Como definir o destino no Teamcenter?"
     Write-Host ""
-    Write-Host "  1 - Sim, adicionar o 3D a um item existente"
-    Write-Host "  2 - Nao, criar um novo item"
+    Write-Host "  1 - Informar um item existente como destino"
+    Write-Host "  2 - Reutilizar cada codigo existente ou criar somente se faltar"
+    Write-Host ""
+    Write-Host "Para montagens, o item informado sera o pai; os filhos usam seus proprios codigos."
     Write-Host ""
 
     while ($true) {
@@ -51,7 +53,7 @@ function Select-TeamcenterItemTarget {
 
                 Write-Host ""
                 Write-Info `
-                    -Message "Destino Teamcenter: $existingItemCode"
+                    -Message "Item informado como destino: $existingItemCode"
 
                 return [PSCustomObject]@{
                     Mode              = "Existing"
@@ -64,7 +66,7 @@ function Select-TeamcenterItemTarget {
 
                 Write-Host ""
                 Write-Info `
-                    -Message "Um novo item sera criado no Teamcenter."
+                    -Message "Cada codigo existente sera reutilizado; somente codigos ausentes serao criados."
 
                 return [PSCustomObject]@{
                     Mode              = "Create"

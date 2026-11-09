@@ -3,22 +3,14 @@
 
 $ErrorActionPreference = "Stop"
 
+. (Join-Path $PSScriptRoot "functions\environment_functions.ps1")
+Import-ProjectEnvironment -ProjectRoot $PSScriptRoot
 
-
-$networkDriveName =
-    "Q"
-
-$networkDrivePath =
-    "\\perto38-novo\NX_Custom"
-
-$sourcePath =
-    "Q:\ImportByPDM\Brazil\ImportarGD_V11"
-
-$temporaryDirectory =
-    "C:\Temp"
-
-$destinationPath =
-    "C:\Temp\ImportarGD"
+$networkDriveName = $env:NETWORK_DRIVE_NAME
+$networkDrivePath = $env:NETWORK_DRIVE_PATH
+$sourcePath = $env:IMPORTER_SOURCE_PATH
+$temporaryDirectory = $env:IMPORTER_TEMPORARY_DIRECTORY
+$destinationPath = $env:IMPORTER_DESTINATION_PATH
 $executableName =
     "Importar GD.exe"
 

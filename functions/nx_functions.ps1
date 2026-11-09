@@ -14,12 +14,12 @@ Imports NXOpen
 Module WrapperImportSW2NX
 
     Private logPath As String =
-        "C:\temp\wrapper_silent_log.txt"
+        "__NX_LOG_PATH__"
 
     Private folderLoad As String = ""
 
     Private company As String =
-        "Perto"
+        "__COMPANY_NAME__"
 
     Private formCompleted As Boolean =
         False
@@ -187,7 +187,7 @@ Catch ex As Exception
 End Try
 
             Dim libraryPath As String =
-                "\\perto38-novo\NX_Custom\ImportSW2NX.dll"
+                "__IMPORT_SW_LIBRARY_PATH__"
 
             If Not File.Exists(libraryPath) Then
 
@@ -880,6 +880,19 @@ End Sub
 
 End Module
 '@
+
+    $wrapperContent = $wrapperContent.Replace(
+        '"__NX_LOG_PATH__"',
+        ('"' + $env:NX_LOG_PATH.Replace('"', '""') + '"')
+    )
+    $wrapperContent = $wrapperContent.Replace(
+        '"__COMPANY_NAME__"',
+        ('"' + $env:COMPANY_NAME.Replace('"', '""') + '"')
+    )
+    $wrapperContent = $wrapperContent.Replace(
+        '"__IMPORT_SW_LIBRARY_PATH__"',
+        ('"' + $env:IMPORT_SW_LIBRARY_PATH.Replace('"', '""') + '"')
+    )
 
     [System.IO.File]::WriteAllText(
         $temporaryWrapperPath,

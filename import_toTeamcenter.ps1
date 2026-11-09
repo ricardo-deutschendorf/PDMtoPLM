@@ -35,15 +35,13 @@ if (
 $ErrorActionPreference = "Stop"
 
 $companyCode =
-"02"
+""
 
 $itemType =
-"GD5DesignPerto"
+""
 
 $teamcenterFunctionsPath =
 Join-Path  $PSScriptRoot  "functions\teamcenter_functions.ps1"
-
-
 
 if (-not (
         Test-Path  -LiteralPath $teamcenterFunctionsPath  -PathType Leaf
@@ -57,6 +55,20 @@ if (-not (
 }
 
 . $teamcenterFunctionsPath
+
+$catalogResolverCommand =
+Get-Command `
+    -Name "Resolve-TeamcenterCatalogItem" `
+    -CommandType Function `
+    -ErrorAction SilentlyContinue
+
+if ($null -eq $catalogResolverCommand) {
+
+    throw (
+        "A funcao Resolve-TeamcenterCatalogItem nao foi carregada. " +
+        "Arquivo esperado: '$teamcenterFunctionsPath'."
+    )
+}
 
 $nxNamesFile =
 Join-Path  $PastaNx  "NomesNx.txt"
@@ -288,11 +300,66 @@ function Import-NxPartToTeamcenter {
         )]
         [string]$TargetMode,
 
-        [string]$TargetItemCode
+        [string]$TargetItemCode,
+
+        [string]$AssemblyRootSourceCode
     )
 
     $sourcePartCode =
     $PartFile.BaseName
+
+    $isPertoCode =
+    $sourcePartCode -match '^\d{3}\.\d{2}\.\d{3}(?:-\d+)?$'
+
+    if (-not $isPertoCode) {
+
+        Write-Host `
+            "  [CATALOG] Componente generico detectado: $sourcePartCode" `
+            -ForegroundColor Cyan
+
+        $catalogResult =
+        Resolve-TeamcenterCatalogItem `
+            -NomeGenerico $sourcePartCode
+
+        if ($null -eq $catalogResult) {
+
+            Write-Host `
+                "  [DEBUG] Componente de catalogo nao resolvido: $sourcePartCode" `
+                -ForegroundColor DarkGray
+
+            Write-Host `
+                "  [WARNING] O componente sera ignorado e nenhum item generico sera criado." `
+                -ForegroundColor Yellow
+
+            return [PSCustomObject]@{
+                SourceFile     = $PartFile.FullName
+                SourcePartCode = $sourcePartCode
+                TeamcenterCode = $null
+                ImportResult   = "SkippedCatalog"
+                IsCatalog      = $true
+                WasSkipped     = $true
+                TeamcenterItem = $null
+            }
+        }
+
+        Write-Host `
+            "  [OK] Item de catalogo localizado: $($catalogResult.ItemId)" `
+            -ForegroundColor Green
+
+        Write-Host `
+            "  -> Nome Teamcenter: $($catalogResult.ObjectName)" `
+            -ForegroundColor Gray
+
+        return [PSCustomObject]@{
+            SourceFile     = $PartFile.FullName
+            SourcePartCode = $sourcePartCode
+            TeamcenterCode = $catalogResult.ItemId
+            ImportResult   = "ExistingCatalog"
+            IsCatalog      = $true
+            WasSkipped     = $false
+            TeamcenterItem = $catalogResult.Object
+        }
+    }
 
     $descriptionCode =
     $sourcePartCode -replace '_\d+$', ''
@@ -309,7 +376,16 @@ function Import-NxPartToTeamcenter {
 
     Write-Info  -Message "Processing: $($PartFile.Name)"
 
-    if ($TargetMode -eq "Existing") {
+    $useExplicitTargetItem =
+    $TargetMode -eq "Existing" -and
+    (
+        [System.String]::IsNullOrWhiteSpace(
+            $AssemblyRootSourceCode
+        ) -or
+        $sourcePartCode -ieq $AssemblyRootSourceCode
+    )
+
+    if ($useExplicitTargetItem) {
 
         if ([System.String]::IsNullOrWhiteSpace($TargetItemCode)) {
 
@@ -343,7 +419,8 @@ function Import-NxPartToTeamcenter {
         New-NextTeamcenterItem `
             -SourceCode $sourcePartCode `
             -CompanyCode $companyCode `
-            -ItemType $itemType
+            -ItemType $itemType `
+            -ReuseExisting
 
         if ($null -eq $teamcenterDestination) {
 
@@ -436,6 +513,8 @@ try {
     Write-Section  -Title "TEAMCENTER CONNECTION"
 
     $null = Connect-Teamcenter
+    $companyCode = $script:TeamcenterCompanyCode
+    $itemType = $script:TeamcenterItemType
 
     Write-Success  -Message "Teamcenter connection established."
     $nxPartFiles =
@@ -532,6 +611,115 @@ try {
 
         Write-Info  -Message "A criacao da BOM sera ignorada."
     }
+    if ($DocumentType -eq "Assembly") {
+
+        $requiredSourceCodes =
+        [System.Collections.Generic.HashSet[string]]::new(
+            [System.StringComparer]::OrdinalIgnoreCase
+        )
+
+        # Inclui todos os pais encontrados no Posicionamento.txt.
+        foreach (
+            $parentCode in
+            (
+                $estruturaView |
+                Select-Object -ExpandProperty Parent -Unique
+            )
+        ) {
+
+            if (-not (
+                    [System.String]::IsNullOrWhiteSpace(
+                        $parentCode
+                    )
+                )) {
+
+                $null =
+                $requiredSourceCodes.Add(
+                    $parentCode
+                )
+            }
+        }
+
+        # Inclui somente os filhos realmente referenciados.
+        foreach ($occurrence in $estruturaView) {
+
+            $requiredChildCode =
+            $occurrence.Child
+
+            if (
+                $occurrence.OccurrenceCode -match '^_\d+$' -and
+                $nxNames.ContainsKey(
+                    $occurrence.OccurrenceCode
+                )
+            ) {
+
+                $requiredChildCode =
+                $nxNames[
+                $occurrence.OccurrenceCode
+                ]
+            }
+
+            if (-not (
+                    [System.String]::IsNullOrWhiteSpace(
+                        $requiredChildCode
+                    )
+                )) {
+
+                $null =
+                $requiredSourceCodes.Add(
+                    $requiredChildCode
+                )
+            }
+        }
+
+        Write-Host ""
+        Write-Host "PRTS NECESSARIOS PARA A BOM:" -ForegroundColor Cyan
+
+        foreach (
+            $requiredSourceCode in
+            (
+                $requiredSourceCodes |
+                Sort-Object
+            )
+        ) {
+
+            Write-Host "  $requiredSourceCode"
+        }
+
+        $unusedPartFiles =
+        @(
+            $nxPartFiles |
+            Where-Object {
+                -not $requiredSourceCodes.Contains(
+                    $_.BaseName
+                )
+            }
+        )
+
+        foreach ($unusedPartFile in $unusedPartFiles) {
+
+            Write-Host `
+                "  [IGNORED] PRT nao utilizado pela BOM: $($unusedPartFile.Name)" `
+                -ForegroundColor DarkGray
+        }
+
+        $nxPartFiles =
+        @(
+            $nxPartFiles |
+            Where-Object {
+                $requiredSourceCodes.Contains(
+                    $_.BaseName
+                )
+            }
+
+        )
+
+        if ($nxPartFiles.Count -eq 0) {
+
+            throw `
+                "Nenhum PRT utilizado pela BOM foi encontrado."
+        }
+    }   
 
     Write-Success  -Message "$($nxPartFiles.Count) PRT file(s) found."
 
@@ -540,7 +728,7 @@ try {
     Write-Section  -Title "TEAMCENTER IMPORT"
 
     Write-Host ""
-    Write-Host "ATENCAO: as proximas linhas vao CRIAR itens reais no Teamcenter." -ForegroundColor Yellow
+    Write-Host "ATENCAO: itens existentes podem ser atualizados; itens ausentes serao criados." -ForegroundColor Yellow
     $confirmacao = Read-Host "Digite 'sim' para continuar, ou qualquer outra coisa para abortar"
 
     if ($confirmacao -ne "sim") {
@@ -552,13 +740,20 @@ try {
     $importResults =
     [System.Collections.Generic.List[object]]::new()
 
+    $assemblyRootSourceCode = $null
+
+    if ($DocumentType -eq "Assembly") {
+        $assemblyRootSourceCode = [string]$estruturaView[0].Parent
+    }
+
     foreach ($nxPartFile in $nxPartFiles) {
 
         $importResult =
         Import-NxPartToTeamcenter `
             -PartFile $nxPartFile `
             -TargetMode $ItemTargetMode `
-            -TargetItemCode $ExistingItemCode
+            -TargetItemCode $ExistingItemCode `
+            -AssemblyRootSourceCode $assemblyRootSourceCode
 
         $importResults.Add(
             $importResult
@@ -611,18 +806,22 @@ try {
 
         try {
 
+            $existingBomOccurrencesByParent = @{}
+
             foreach ($occurrence in $estruturaView) {
 
                 $resolvedChildCode =
                 $occurrence.Child
 
-                if ($nxNames.ContainsKey($occurrence.OccurrenceCode)) {
+                # Somente aliases temporarios do NX, como _2, _4, _6 e _7,
+                # precisam ser traduzidos pelo NomesNx.txt.
+                if (
+                    $occurrence.OccurrenceCode -match '^_\d+$' -and
+                    $nxNames.ContainsKey($occurrence.OccurrenceCode)
+                ) {
+
                     $resolvedChildCode =
                     $nxNames[$occurrence.OccurrenceCode]
-                }
-                elseif ($nxNames.ContainsKey($occurrence.Child)) {
-                    $resolvedChildCode =
-                    $nxNames[$occurrence.Child]
                 }
 
                 $childResult =
@@ -648,6 +847,64 @@ try {
                 if ($null -eq $childRevision) {
 
                     Write-Host  "  [WARNING] Revisao nao encontrada: $($occurrence.Child)"  -ForegroundColor Yellow
+
+                    continue
+                }
+
+                $occurrenceParentResult =
+                $importResults |
+                Where-Object {
+                    $_.SourcePartCode -ieq $occurrence.Parent
+                } |
+                Select-Object -First 1
+
+                if ($null -eq $occurrenceParentResult) {
+
+                    Write-Host  "  [WARNING] Pai nao localizado: $($occurrence.Parent)"  -ForegroundColor Yellow
+
+                    continue
+                }
+
+                $occurrenceParentItem =
+                Get-TeamcenterItem  -ItemCode $occurrenceParentResult.TeamcenterCode
+
+                $occurrenceParentRevision =
+                Get-TeamcenterRevision  -Item $occurrenceParentItem
+
+                if ($null -eq $occurrenceParentRevision) {
+
+                    Write-Host  "  [WARNING] Revisao do pai nao localizada: $($occurrence.Parent)"  -ForegroundColor Yellow
+
+                    continue
+                }
+
+                $parentTeamcenterCode =
+                [string]$occurrenceParentResult.TeamcenterCode
+
+                if (-not $existingBomOccurrencesByParent.ContainsKey(
+                        $parentTeamcenterCode
+                    )) {
+
+                    $existingBomOccurrencesByParent[$parentTeamcenterCode] =
+                    Get-TeamcenterBomOccurrenceKeys `
+                        -ParentRevision $occurrenceParentRevision
+                }
+
+                $parentOccurrenceKeys =
+                $existingBomOccurrencesByParent[$parentTeamcenterCode]
+
+                $occurrenceKey =
+                Get-TeamcenterBomOccurrenceKey `
+                    -ItemCode $childResult.TeamcenterCode `
+                    -Transform $occurrence.Transform
+
+                if ($parentOccurrenceKeys.Contains($occurrenceKey)) {
+
+                    Write-Info `
+                        -Message (
+                        "Ocorrencia ja existente na BOM; ignorada: " +
+                        "$($occurrence.OccurrenceCode)"
+                        )
 
                     continue
                 }
@@ -678,43 +935,19 @@ try {
 
                 Write-Info  -Message "Transform: $($occurrence.Transform)"
 
-                $occurrenceParentResult =
-                $importResults |
-                Where-Object {
-                    $_.SourcePartCode -ieq $occurrence.Parent
-                } |
-                Select-Object -First 1
-
-                if ($null -eq $occurrenceParentResult) {
-
-                    Write-Host  "  [WARNING] Pai nao localizado: $($occurrence.Parent)"  -ForegroundColor Yellow
-
-                    continue
-                }
-
-                $occurrenceParentItem =
-                Get-TeamcenterItem  -ItemCode $occurrenceParentResult.TeamcenterCode
-
-                $occurrenceParentRevision =
-                Get-TeamcenterRevision  -Item $occurrenceParentItem
-
-                if ($null -eq $occurrenceParentRevision) {
-
-                    Write-Host  "  [WARNING] Revisao do pai nao localizada: $($occurrence.Parent)"  -ForegroundColor Yellow
-
-                    continue
-                }
-
+                $null =
                 [ImportarGD.Controller.Functions]::addAllChildrenInBOM(
                     $occurrenceParentRevision,
                     $singleChildList,
                     $attributes
                 )
 
+                [void]$parentOccurrenceKeys.Add($occurrenceKey)
+
             }
 
             Write-Host ""
-            Write-Success  -Message "BOM criada com posicionamento."
+            Write-Success  -Message "BOM atualizada com posicionamento; ocorrencias existentes foram preservadas."
         }
         catch {
 

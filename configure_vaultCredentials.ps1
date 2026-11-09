@@ -2,14 +2,11 @@
 
 $ErrorActionPreference = "Stop"
 
-$pdmLibraryPath =
-"C:\Perto\Templates\CodAplic\Interop.EdmLib.dll"
+. (Join-Path $PSScriptRoot "functions\environment_functions.ps1")
+Import-ProjectEnvironment -ProjectRoot $PSScriptRoot
 
-$vaultName =
-"Perto"
-
-$credentialFilePath =
-Join-Path  $PSScriptRoot  "vault_credentials.xml"
+$pdmLibraryPath = $env:PDM_LIBRARY_PATH
+$vaultName = $env:VAULT_NAME
 
 # Section: Print a console section heading
 function Write-Section {
@@ -186,29 +183,24 @@ try {
 
         Write-Success  -Message "Vault access validated."
 
-        $credentialData =
-        [PSCustomObject]@{
-            Usuario = $username
+        $encryptedPassword =
+        ConvertFrom-SecureString -SecureString $password
 
-            SenhaCriptografada =
-            ConvertFrom-SecureString  -SecureString $password
-        }
+        Set-ProjectEnvironmentValue `
+            -ProjectRoot $PSScriptRoot `
+            -Name "VAULT_USERNAME" `
+            -Value $username
 
-        $credentialData |
-        Export-Clixml  -LiteralPath $credentialFilePath  -Force
-
-        if (-not (
-                Test-Path  -LiteralPath $credentialFilePath
-            )) {
-
-            throw  "The credential file could not be created."
-        }
+        Set-ProjectEnvironmentValue `
+            -ProjectRoot $PSScriptRoot `
+            -Name "VAULT_PASSWORD_ENCRYPTED" `
+            -Value $encryptedPassword
 
         Write-Host ""
 
         Write-Success  -Message "Credential saved successfully."
 
-        Write-Information  -Message "File: $credentialFilePath"
+        Write-Information  -Message "File: $(Join-Path $PSScriptRoot '.env')"
 
         break
     }

@@ -1,36 +1,55 @@
 ﻿# === PDM to PLM extraction workflow ===
-Write-Host ""
-Write-Host "=== NETWORK DRIVE SETUP ===" -ForegroundColor Cyan
-Write-Host "[1/2] Cleaning previous Q: mapping..." -ForegroundColor DarkGray
-& net.exe use Q: /delete /yes *> $null
-Write-Host "[2/2] Connecting Q: to \\perto38-novo\NX_Custom..." -ForegroundColor DarkGray
-& net.exe use Q: \\perto38-novo\NX_Custom
-Write-Host "[OK] Q: drive is ready." -ForegroundColor Green
-
 $ErrorActionPreference = "Stop"
 
-$pdmLibraryPath =
-"C:\Perto\Templates\CodAplic\Interop.EdmLib.dll"
+. (Join-Path $PSScriptRoot "functions\environment_functions.ps1")
+Import-ProjectEnvironment -ProjectRoot $PSScriptRoot
 
-$vaultName =
-"Perto"
+$networkDriveName = $env:NETWORK_DRIVE_NAME
+$networkDrivePath = $env:NETWORK_DRIVE_PATH
+$networkDriveName = $networkDriveName.TrimEnd(':')
+$networkDrive = "$networkDriveName`:"
+$networkDriveRoot = $networkDrive + "\"
 
-$vaultCredentialPath =
-Join-Path  $PSScriptRoot  "vault_credentials.xml"
+Write-Host ""
+Write-Host "=== NETWORK DRIVE SETUP ===" -ForegroundColor Cyan
+Write-Host "[1/2] Cleaning previous $networkDrive mapping..." -ForegroundColor DarkGray
+$existingNetworkDrive = Get-CimInstance `
+    -ClassName Win32_LogicalDisk `
+    -Filter "DeviceID='$networkDrive'"
 
-$downloadRootPath =
-"C:\temp\importados"
+if ($null -eq $existingNetworkDrive) {
+    Write-Host "[INFO] No existing network mapping to remove." -ForegroundColor Gray
+}
+elseif ($existingNetworkDrive.DriveType -eq 4) {
+    & net.exe use $networkDrive /delete /yes *> $null
 
-$runJournalPath = "C:\Siemens\NX2312\NXBIN\run_journal.exe"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not remove the existing $networkDrive network mapping."
+    }
+}
+else {
+    throw "$networkDrive is already assigned to a non-network drive and cannot be remapped."
+}
 
-$importSwLibraryPath =
-"\\perto38-novo\NX_Custom\ImportSW2NX.dll"
+Write-Host "[2/2] Connecting network drive..." -ForegroundColor DarkGray
+& net.exe use $networkDrive $networkDrivePath
+if ($LASTEXITCODE -ne 0) {
+    throw "Could not map $networkDrive to the configured network path."
+}
 
-$companyName =
-"Perto"
+if (-not (Test-Path -LiteralPath $networkDriveRoot)) {
+    throw "$networkDrive was mapped, but the network drive is not accessible."
+}
 
-$nxLogPath =
-"C:\temp\wrapper_silent_log.txt"
+Write-Host "[OK] $networkDrive drive is ready." -ForegroundColor Green
+
+$pdmLibraryPath = $env:PDM_LIBRARY_PATH
+$vaultName = $env:VAULT_NAME
+$downloadRootPath = $env:DOWNLOAD_ROOT_PATH
+$runJournalPath = $env:NX_RUN_JOURNAL_PATH
+$importSwLibraryPath = $env:IMPORT_SW_LIBRARY_PATH
+$companyName = $env:COMPANY_NAME
+$nxLogPath = $env:NX_LOG_PATH
 
 $temporaryWrapperPath =
 Join-Path  $env:TEMP  "PDMtoPLM_wrapper.vb"
@@ -66,8 +85,9 @@ try {
 
         Write-Info `
             -Message (
-            "O codigo Teamcenter '$($itemTargetSelection.ExistingItemCode)' " +
-            "sera usado somente como destino do 3D."
+        "O codigo Teamcenter '$($itemTargetSelection.ExistingItemCode)' " +
+        "sera usado como destino principal; os componentes de montagens " +
+        "serao resolvidos por seus proprios codigos."
         )
 
         Write-Info `
